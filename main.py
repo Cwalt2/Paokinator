@@ -6,29 +6,27 @@ import torch.nn.functional as F
 from scipy.stats import entropy
 import warnings
 import os
+
 warnings.filterwarnings('ignore')
 
 class TinyAssistNN(nn.Module):
-    """Minimal NN to assist Naive Bayes - learns feature correlations"""
-    def __init__(self, input_size, num_classes):
-    
-        super(TinyAssistNN, self).__init__()
-        # Deeper network for better pattern learning
-        self.fc1 = nn.Linear(input_size, 64)
-        self.bn1 = nn.BatchNorm1d(64)
-        self.dropout1 = nn.Dropout(0.2)
-        self.fc2 = nn.Linear(64, 32)
-        self.bn2 = nn.BatchNorm1d(32)
-        self.dropout2 = nn.Dropout(0.2)
-        self.fc3 = nn.Linear(32, num_classes)
-        
-    def forward(self, x):
-        x = F.relu(self.bn1(self.fc1(x)))
-        x = self.dropout1(x)
-        x = F.relu(self.bn2(self.fc2(x)))
-        x = self.dropout2(x)
-        return self.fc3(x)
+    def __init__(self, input_size, num_classes, hidden=32, dropout=0.1):
+        super().__init__()
+        self.fc1 = nn.Linear(input_size, hidden)
+        self.ln1 = nn.LayerNorm(hidden)
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden, num_classes)
 
+        # optional light weight init
+        nn.init.kaiming_normal_(self.fc1.weight, nonlinearity='relu')
+        nn.init.normal_(self.fc2.weight, mean=0.0, std=0.01)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = F.relu(self.ln1(x))
+        x = self.dropout(x)
+        return self.fc2(x)
+    
 class Paokinator:
     def __init__(self, csv_path='animalfulldata.csv'):
         self.csv_path = csv_path
@@ -46,6 +44,10 @@ class Paokinator:
         self.device = torch.device('cpu')
         self.feature_tensor = torch.FloatTensor(self.df[self.feature_cols].values).to(self.device)
         
+        # --- NEW --- Weight for NN feature importance in question selection
+        self.nn_importance_weight = 0.1
+        self.nn_feature_importance = None
+
         self.reset_game()
         self.train_assistant()
         
@@ -55,7 +57,7 @@ class Paokinator:
         self.asked_questions = set()
     
     def train_assistant(self):
-        """Quick training - NN just learns to assist Naive Bayes"""
+        """Quick training - NN learns to classify animals and we extract feature importance from it."""
         X = self.feature_tensor
         y = torch.LongTensor(np.arange(len(self.animals))).to(self.device)
         
@@ -65,26 +67,35 @@ class Paokinator:
         if os.path.exists('assist_model.pt'):
             try:
                 self.nn.load_state_dict(torch.load('assist_model.pt', map_location=self.device))
-                self.nn.eval()
+            except Exception as e:
+                print(f"Could not load model, retraining... Error: {e}")
+                os.remove('assist_model.pt') 
+                self.train_assistant()
                 return
-            except:
-                pass
-        
-        optimizer = torch.optim.Adam(self.nn.parameters(), lr=0.003)
-        criterion = nn.CrossEntropyLoss()
-        
-        # Fast training - 15 epochs is enough
-        self.nn.train()
-        for epoch in range(15):
-            optimizer.zero_grad()
-            outputs = self.nn(X)
-            loss = criterion(outputs, y)
-            loss.backward()
-            optimizer.step()
-        
+
+        else: 
+            optimizer = torch.optim.Adam(self.nn.parameters(), lr=0.003)
+            criterion = nn.CrossEntropyLoss()
+            
+            self.nn.train()
+            for epoch in range(15):
+                optimizer.zero_grad()
+                outputs = self.nn(X)
+                loss = criterion(outputs, y)
+                loss.backward()
+                optimizer.step()
+            torch.save(self.nn.state_dict(), 'assist_model.pt')
+
         self.nn.eval()
-        torch.save(self.nn.state_dict(), 'assist_model.pt')
-    
+        
+        with torch.no_grad():
+            importance = self.nn.fc1.weight.abs().sum(dim=0).cpu().numpy()
+            # Normalize to prevent overwhelming the entropy gain calculation
+            if np.max(importance) > 0:
+                self.nn_feature_importance = importance / np.max(importance)
+            else:
+                self.nn_feature_importance = np.zeros_like(importance)
+
     def update_probabilities(self, feature, fuzzy_value):
         """Core Naive Bayes update with fuzzy logic"""
         animal_values = self.df[feature].values
@@ -102,7 +113,7 @@ class Paokinator:
         """NN provides secondary opinion based on feature correlations"""
         # Build partial feature vector (unknowns = 0.5)
         features = torch.FloatTensor([self.answered_features.get(col, 0.5) 
-                                     for col in self.feature_cols]).unsqueeze(0).to(self.device)
+                                      for col in self.feature_cols]).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
             logits = self.nn(features)
@@ -127,20 +138,24 @@ class Paokinator:
         return [(self.animals[i], final[i]) for i in top_idx]
     
     def get_best_question(self):
-        """Information gain - which question reduces uncertainty most?"""
+        """
+        Information gain assisted by PyTorch feature importance.
+        It prioritizes questions that both reduce uncertainty (high entropy gain)
+        and are generally important for classification (high NN weight).
+        """
         available_features = [f for f in self.feature_cols if f not in self.asked_questions]
         
         if not available_features:
             return None
         
         current_entropy = entropy(self.probabilities + 1e-10)
-        best_feature, best_gain = None, -1
+        best_feature, best_score = None, -1
         
         for feature in available_features:
             animal_values = self.df[feature].values
             expected_entropy = 0
             
-            # Test yes/maybe/no
+            # Test yes/maybe/no to calculate expected entropy reduction
             for fuzzy_val in [1.0, 0.5, 0.0]:
                 uncertainty = 2.0 if fuzzy_val == 0.5 else 3.5
                 distances = np.abs(fuzzy_val - animal_values)
@@ -153,12 +168,23 @@ class Paokinator:
                     temp_probs /= temp_probs.sum()
                     expected_entropy += p_answer * entropy(temp_probs + 1e-10)
             
+            # Standard information gain
             gain = current_entropy - expected_entropy
-            if gain > best_gain:
-                best_gain, best_feature = gain, feature
+            
+            # --- MODIFIED PART ---
+            # Get the feature index to look up its importance
+            feature_idx = self.feature_cols.index(feature)
+            # Get the pre-calculated importance from the NN
+            nn_boost = self.nn_feature_importance[feature_idx]
+            
+            # Combine information gain with the NN's feature importance boost
+            combined_score = gain + self.nn_importance_weight * nn_boost
+            
+            if combined_score > best_score:
+                best_score, best_feature = combined_score, feature
         
         return best_feature if best_feature else available_features[0]
-    
+
     def format_question(self, feature):
         """Convert feature to natural question"""
         questions = {
@@ -271,7 +297,7 @@ class Paokinator:
             # Create new entry
             new_row = {'animal_name': animal_name}
             for feature in self.feature_cols:
-                new_row[feature] = self.answered_features.get(feature, 0.5)
+                new_row[feature] = self.answered_features.get(feature, 0.5) # Default to 'maybe'
             
             # Append to dataframe
             self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
@@ -281,10 +307,12 @@ class Paokinator:
         print(f"✓ Added/Updated {animal_name} to database!")
         print(f"✓ Saved to {self.csv_path}")
         
-        # Retrain model
+        # Reload data and retrain model
         print("✓ Retraining neural network...")
         self.animals = self.df['animal_name'].values
         self.feature_tensor = torch.FloatTensor(self.df[self.feature_cols].values).to(self.device)
+        if os.path.exists('assist_model.pt'):
+            os.remove('assist_model.pt') # Force retrain
         self.train_assistant()
         print("✓ Model updated and ready!")
     
@@ -336,15 +364,15 @@ class Paokinator:
         for i, (animal, prob) in enumerate(self.get_predictions(3), 1):
             print(f"  {i}. {animal:25s} ({prob:.1%})")
         
-        top = self.get_predictions(1)[0][0]
-        print(f"\nFinal answer: {top}?")
+        top_guess = self.get_predictions(1)[0][0]
+        print(f"\n {top_guess}?")
         if input("-> ").strip().lower() in ['yes', 'y']:
             print("\n🎉 I told you! The math never lies.")
         else:
-            correct = input("\nWhat was it? -> ").strip()
-            if correct:
-                print(f"\n📚 Learning time! Adding {correct} to my database...")
-                self.add_new_animal(correct)
+            correct_animal = input("\nWhat was it? -> ").strip()
+            if correct_animal:
+                print(f"\n📚 Learning time! Adding {correct_animal} to my database...")
+                self.add_new_animal(correct_animal)
                 print("In a moment I'll get it right next time!")
 
 if __name__ == "__main__":
