@@ -1,0 +1,8 @@
+/.env
+/.venv
+/ae_model.pth
+/cleaner.py
+/embeddings.npy
+/metadata.pkl
+/names.pkl
+/__pycache__
