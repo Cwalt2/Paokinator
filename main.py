@@ -2,377 +2,357 @@ import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.naive_bayes import GaussianNB
+import torch.nn.functional as F
 from scipy.stats import entropy
 import warnings
+import os
 warnings.filterwarnings('ignore')
 
-class AnimalNN(nn.Module):
-    """Lightweight PyTorch neural network"""
+class TinyAssistNN(nn.Module):
+    """Minimal NN to assist Naive Bayes - learns feature correlations"""
     def __init__(self, input_size, num_classes):
-        super(AnimalNN, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_size, 128),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, num_classes)
-        )
     
+        super(TinyAssistNN, self).__init__()
+        # Deeper network for better pattern learning
+        self.fc1 = nn.Linear(input_size, 64)
+        self.bn1 = nn.BatchNorm1d(64)
+        self.dropout1 = nn.Dropout(0.2)
+        self.fc2 = nn.Linear(64, 32)
+        self.bn2 = nn.BatchNorm1d(32)
+        self.dropout2 = nn.Dropout(0.2)
+        self.fc3 = nn.Linear(32, num_classes)
+        
     def forward(self, x):
-        return self.net(x)
+        x = F.relu(self.bn1(self.fc1(x)))
+        x = self.dropout1(x)
+        x = F.relu(self.bn2(self.fc2(x)))
+        x = self.dropout2(x)
+        return self.fc3(x)
 
-class FastFuzzyGuesser:
+class Paokinator:
     def __init__(self, csv_path='animalfulldata.csv'):
         self.csv_path = csv_path
         self.df = pd.read_csv(csv_path)
         self.feature_cols = [c for c in self.df.columns if c != 'animal_name']
         self.animals = self.df['animal_name'].values
         
-        # Fuzzy answer mapping
         self.fuzzy_map = {
-            'yes': 1.0, 'y': 1.0,
-            'probably': 0.75, 'prob': 0.75,
-            'maybe': 0.5, 'idk': 0.5, 'unknown': 0.5, '?': 0.5,
-            'probably not': 0.25, 'prob not': 0.25,
-            'no': 0.0, 'n': 0.0
+            'yes': 1.0, 'y': 1.0, 'probably': 0.75, 'prob': 0.75,
+            'maybe': 0.5, 'idk': 0.5, '?': 0.5,
+            'probably not': 0.25, 'prob not': 0.25, 'no': 0.0, 'n': 0.0
         }
         
-        # Game state
+        # Pre-compute for speed
+        self.device = torch.device('cpu')
+        self.feature_tensor = torch.FloatTensor(self.df[self.feature_cols].values).to(self.device)
+        
+        self.reset_game()
+        self.train_assistant()
+        
+    def reset_game(self):
         self.probabilities = np.ones(len(self.animals)) / len(self.animals)
         self.answered_features = {}
         self.asked_questions = set()
+    
+    def train_assistant(self):
+        """Quick training - NN just learns to assist Naive Bayes"""
+        X = self.feature_tensor
+        y = torch.LongTensor(np.arange(len(self.animals))).to(self.device)
         
-        # Pre-compute feature statistics for faster info gain
-        self.feature_means = self.df[self.feature_cols].mean().values
-        self.feature_stds = self.df[self.feature_cols].std().values + 0.01
+        self.nn = TinyAssistNN(len(self.feature_cols), len(self.animals)).to(self.device)
         
-        self.train_models()
+        # Try loading saved model
+        if os.path.exists('assist_model.pt'):
+            try:
+                self.nn.load_state_dict(torch.load('assist_model.pt', map_location=self.device))
+                self.nn.eval()
+                return
+            except:
+                pass
         
-    def train_models(self):
-        """Train only Naive Bayes + PyTorch (fast!)"""
-        X = self.df[self.feature_cols].values
-        y = np.arange(len(self.animals))
-        
-        print("Training models...", end=" ", flush=True)
-        
-        # 1. Naive Bayes - super fast, handles uncertainty well
-        self.nb_model = GaussianNB()
-        self.nb_model.fit(X, y)
-        
-        # 2. PyTorch - smaller, faster network
-        X_tensor = torch.FloatTensor(X)
-        y_tensor = torch.LongTensor(y)
-        
-        self.nn_model = AnimalNN(len(self.feature_cols), len(self.animals))
+        optimizer = torch.optim.Adam(self.nn.parameters(), lr=0.003)
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(self.nn_model.parameters(), lr=0.003)
         
-        # Fast training with larger batches
-        self.nn_model.train()
-        batch_size = 64
-        n_epochs = 80
+        # Fast training - 15 epochs is enough
+        self.nn.train()
+        for epoch in range(15):
+            optimizer.zero_grad()
+            outputs = self.nn(X)
+            loss = criterion(outputs, y)
+            loss.backward()
+            optimizer.step()
         
-        for epoch in range(n_epochs):
-            indices = torch.randperm(len(X_tensor))
-            for i in range(0, len(X_tensor), batch_size):
-                batch_idx = indices[i:i+batch_size]
-                batch_X = X_tensor[batch_idx]
-                batch_y = y_tensor[batch_idx]
-                
-                optimizer.zero_grad()
-                outputs = self.nn_model(batch_X)
-                loss = criterion(outputs, batch_y)
-                loss.backward()
-                optimizer.step()
-        
-        self.nn_model.eval()
-        print("✓ Done!")
+        self.nn.eval()
+        torch.save(self.nn.state_dict(), 'assist_model.pt')
     
-    def update_probabilities_fuzzy(self, feature, fuzzy_value):
-        """Fast Bayesian update with fuzzy logic"""
-        feature_idx = self.feature_cols.index(feature)
-        animal_feature_values = self.df[feature].values
+    def update_probabilities(self, feature, fuzzy_value):
+        """Core Naive Bayes update with fuzzy logic"""
+        animal_values = self.df[feature].values
+        uncertainty = 2.0 if fuzzy_value == 0.5 else 3.5
         
-        # Vectorized fuzzy likelihood calculation
-        distances = np.abs(fuzzy_value - animal_feature_values)
-        likelihoods = np.exp(-3.0 * distances)
+        # Fuzzy likelihood: how well does each animal match this answer?
+        distances = np.abs(fuzzy_value - animal_values)
+        likelihoods = np.exp(-uncertainty * distances)
         
-        # Bayesian update
+        # Bayes update
         self.probabilities *= likelihoods
-        
-        # Normalize
-        total = self.probabilities.sum()
-        if total > 1e-10:
-            self.probabilities /= total
-        else:
-            # Fallback to model predictions
-            self.probabilities = self.get_ensemble_probs()
+        self.probabilities /= self.probabilities.sum()
     
-    def get_ensemble_probs(self):
-        """Fast ensemble of Naive Bayes + PyTorch"""
-        # Build feature vector
-        features = np.array([self.answered_features.get(col, 0.5) 
-                           for col in self.feature_cols])
-        X = features.reshape(1, -1)
+    def get_nn_assist(self):
+        """NN provides secondary opinion based on feature correlations"""
+        # Build partial feature vector (unknowns = 0.5)
+        features = torch.FloatTensor([self.answered_features.get(col, 0.5) 
+                                     for col in self.feature_cols]).unsqueeze(0).to(self.device)
         
-        # Naive Bayes
-        nb_probs = self.nb_model.predict_proba(X)[0]
-        
-        # PyTorch
         with torch.no_grad():
-            X_tensor = torch.FloatTensor(X)
-            logits = self.nn_model(X_tensor)
-            nn_probs = torch.softmax(logits, dim=1)[0].numpy()
+            logits = self.nn(features)
+            probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
         
-        # Adaptive weighting: early = more NB, late = more NN
-        info_ratio = len(self.answered_features) / len(self.feature_cols)
-        nb_weight = 0.6 - info_ratio * 0.2
-        nn_weight = 0.4 + info_ratio * 0.2
-        
-        return nb_weight * nb_probs + nn_weight * nn_probs
+        return probs
     
-    def calculate_information_gain_fast(self, feature):
-        """Fast information gain calculation"""
-        if feature in self.asked_questions:
-            return -999
+    def get_predictions(self, n=5):
+        """Blend Naive Bayes (primary) with NN assist (secondary)"""
+        bayes = self.probabilities
         
-        feature_idx = self.feature_cols.index(feature)
-        animal_feature_values = self.df[feature].values
+        # Only use NN when we have some information
+        if len(self.answered_features) >= 2:
+            nn = self.get_nn_assist()
+            # Naive Bayes is primary (80%), NN assists (20%)
+            final = 0.8 * bayes + 0.2 * nn
+        else:
+            final = bayes
         
-        # Current entropy
-        current_entropy = entropy(self.probabilities + 1e-10)
-        
-        # Fast approximation: only test 3 key answers (yes, idk, no)
-        fuzzy_answers = [1.0, 0.5, 0.0]
-        
-        expected_entropy = 0
-        total_weight = 0
-        
-        for fuzzy_val in fuzzy_answers:
-            # Vectorized probability calculation
-            distances = np.abs(fuzzy_val - animal_feature_values)
-            answer_likelihoods = np.exp(-3.0 * distances)
-            
-            # Probability of this answer
-            p_answer = np.dot(self.probabilities, answer_likelihoods)
-            total_weight += p_answer
-            
-            # Expected probabilities if we get this answer
-            temp_probs = self.probabilities * answer_likelihoods
-            temp_sum = temp_probs.sum()
-            
-            if temp_sum > 1e-10:
-                temp_probs /= temp_sum
-                entropy_after = entropy(temp_probs + 1e-10)
-                expected_entropy += p_answer * entropy_after
-        
-        # Normalize
-        if total_weight > 0:
-            expected_entropy /= total_weight
-        
-        # Information gain
-        info_gain = current_entropy - expected_entropy
-        
-        # Small boost for features with moderate variance (more discriminative)
-        variance_boost = self.feature_stds[feature_idx] * 0.3
-        
-        return max(0, info_gain + variance_boost)
+        final = final / final.sum()
+        top_idx = np.argsort(final)[::-1][:n]
+        return [(self.animals[i], final[i]) for i in top_idx]
     
     def get_best_question(self):
-        """Find best question efficiently"""
-        best_feature = None
-        best_gain = -1
+        """Information gain - which question reduces uncertainty most?"""
+        available_features = [f for f in self.feature_cols if f not in self.asked_questions]
         
-        # Only calculate info gain for unasked features
-        for feature in self.feature_cols:
-            if feature not in self.asked_questions:
-                gain = self.calculate_information_gain_fast(feature)
-                if gain > best_gain:
-                    best_gain = gain
-                    best_feature = feature
+        if not available_features:
+            return None
         
-        return best_feature
-    
-    def get_top_predictions(self, n=5):
-        """Get top N predictions"""
-        # Blend Bayesian probabilities with model predictions
-        bayes_probs = self.probabilities
-        model_probs = self.get_ensemble_probs()
+        current_entropy = entropy(self.probabilities + 1e-10)
+        best_feature, best_gain = None, -1
         
-        # Weight based on information collected
-        info_ratio = len(self.answered_features) / len(self.feature_cols)
-        bayes_weight = 0.6 + info_ratio * 0.2
-        model_weight = 1 - bayes_weight
+        for feature in available_features:
+            animal_values = self.df[feature].values
+            expected_entropy = 0
+            
+            # Test yes/maybe/no
+            for fuzzy_val in [1.0, 0.5, 0.0]:
+                uncertainty = 2.0 if fuzzy_val == 0.5 else 3.5
+                distances = np.abs(fuzzy_val - animal_values)
+                likelihoods = np.exp(-uncertainty * distances)
+                
+                p_answer = np.dot(self.probabilities, likelihoods)
+                
+                if p_answer > 1e-10:
+                    temp_probs = self.probabilities * likelihoods
+                    temp_probs /= temp_probs.sum()
+                    expected_entropy += p_answer * entropy(temp_probs + 1e-10)
+            
+            gain = current_entropy - expected_entropy
+            if gain > best_gain:
+                best_gain, best_feature = gain, feature
         
-        final_probs = bayes_weight * bayes_probs + model_weight * model_probs
-        
-        top_indices = np.argsort(final_probs)[::-1][:n]
-        return [(self.animals[i], final_probs[i]) for i in top_indices]
+        return best_feature if best_feature else available_features[0]
     
     def format_question(self, feature):
-        """Convert feature to question"""
+        """Convert feature to natural question"""
         questions = {
-            'is_mammal': 'Is it a mammal?',
-            'is_bird': 'Is it a bird?',
-            'is_reptile': 'Is it a reptile?',
-            'is_fish': 'Is it a fish?',
-            'is_amphibian': 'Is it an amphibian?',
-            'is_insect': 'Is it an insect?',
-            'is_arachnid': 'Is it an arachnid (spider/scorpion)?',
-            'is_crustacean': 'Is it a crustacean (crab/lobster)?',
-            'is_mollusc': 'Is it a mollusc (snail/octopus)?',
-            'is_tiny': 'Is it tiny (smaller than a mouse)?',
-            'is_small': 'Is it small (cat-sized)?',
-            'is_medium': 'Is it medium-sized (dog to deer)?',
-            'is_large': 'Is it large (horse-sized or bigger)?',
-            'is_very_large': 'Is it very large (elephant-sized)?',
-            'is_massive': 'Is it massive (whale-sized)?',
-            'has_fur': 'Does it have fur?',
+            # Animal Classification
+            'is_mammal': 'Is it a mammal (like dogs, cats, humans)?',
+            'is_bird': 'Is it a bird (like eagles, parrots, penguins)?',
+            'is_reptile': 'Is it a reptile (like snakes, lizards, turtles)?',
+            'is_fish': 'Is it a fish (lives in water with gills)?',
+            'is_amphibian': 'Is it an amphibian (like frogs, toads, salamanders)?',
+            'is_insect': 'Is it an insect (like ants, bees, butterflies)?',
+            'is_arachnid': 'Is it a spider, scorpion, or tick?',
+            'is_crustacean': 'Is it a crab, lobster, shrimp, or similar?',
+            'is_mollusc': 'Is it a snail, slug, octopus, or squid?',
+            
+            # Size
+            'is_tiny': 'Is it very tiny (smaller than your hand)?',
+            'is_small': 'Is it small (about cat-sized or smaller)?',
+            'is_medium': 'Is it medium-sized (like a dog or deer)?',
+            'is_large': 'Is it large (like a horse or cow)?',
+            'is_very_large': 'Is it very large (like an elephant or giraffe)?',
+            'is_massive': 'Is it massive (like a whale or very large dinosaur)?',
+            
+            # Body Covering
+            'has_fur': 'Does it have fur or hair on its body?',
             'has_feathers': 'Does it have feathers?',
-            'has_scales': 'Does it have scales?',
-            'has_shell': 'Does it have a shell?',
+            'has_scales': 'Does it have scales on its body?',
+            'has_shell': 'Does it have a hard shell (like a turtle or snail)?',
+            'has_exoskeleton': 'Does it have a hard outer skeleton (like insects or crabs)?',
+            
+            # Body Parts
             'has_wings': 'Does it have wings?',
             'has_tail': 'Does it have a tail?',
-            'has_fins': 'Does it have fins?',
-            'has_claws': 'Does it have claws?',
-            'has_horns': 'Does it have horns/antlers?',
-            'has_stripes': 'Does it have stripes?',
-            'has_spots': 'Does it have spots?',
-            'can_fly': 'Can it fly?',
-            'can_swim': 'Can it swim?',
-            'can_climb': 'Can it climb trees?',
-            'lives_in_ocean': 'Does it live in the ocean?',
-            'lives_in_freshwater': 'Does it live in freshwater?',
-            'lives_on_land': 'Does it live on land?',
-            'lives_in_forest': 'Does it live in forests?',
-            'lives_in_jungle': 'Does it live in jungles?',
-            'lives_in_grassland': 'Does it live in grasslands?',
-            'lives_in_desert': 'Does it live in deserts?',
-            'lives_in_arctic': 'Does it live in arctic regions?',
-            'is_domesticated': 'Is it commonly kept as a pet?',
-            'is_farm_animal': 'Is it a farm animal?',
-            'is_nocturnal': 'Is it active at night?',
-            'makes_a_distinctive_sound': 'Does it make a distinctive sound?',
-            'is_social': 'Does it live in groups?',
-            'lives_solitary': 'Does it live alone?',
-            'lays_eggs': 'Does it lay eggs?',
-            'is_venomous': 'Is it venomous?',
-            'is_carnivore': 'Is it a carnivore?',
-            'is_herbivore': 'Is it an herbivore?',
-            'is_omnivore': 'Is it an omnivore?',
-            'is_predator': 'Is it a predator?',
-            'is_endangered': 'Is it endangered?',
+            'has_fins': 'Does it have fins (for swimming)?',
+            'has_claws': 'Does it have claws or sharp nails?',
+            'has_horns': 'Does it have horns or antlers?',
+            'has_tusks': 'Does it have tusks (like elephants or walruses)?',
+            
+            # Body Shape & Appearance
+            'is_long_and_slender': 'Is it long and slender (like a snake or weasel)?',
+            'is_stout_and_bulky': 'Is it stout and bulky (like a hippo or bear)?',
+            'has_spots': 'Does it have spots or dots on its body?',
+            'has_stripes': 'Does it have stripes on its body?',
+            'has_mane': 'Does it have a mane (like a lion or horse)?',
+            'can_change_color': 'Can it change its color (like a chameleon or octopus)?',
+            
+            # Habitat - Water
+            'lives_in_ocean': 'Does it live in the ocean or sea?',
+            'lives_in_freshwater': 'Does it live in rivers, lakes, or ponds?',
+            
+            # Habitat - Land Types
+            'lives_on_land': 'Does it live on land (not in water)?',
+            'lives_in_forest': 'Does it live in forests or woods?',
+            'lives_in_jungle': 'Does it live in tropical jungles or rainforests?',
+            'lives_in_grassland': 'Does it live in open grasslands, savannas, or plains?',
+            'lives_in_mountains': 'Does it live in mountains or high altitudes?',
+            'lives_in_desert': 'Does it live in hot, dry deserts?',
+            'lives_in_arctic': 'Does it live in cold, icy, or arctic regions?',
+            
+            # Relationship with Humans
+            'is_domesticated': 'Do people commonly keep it as a pet or companion?',
+            'is_farm_animal': 'Is it a farm animal (like cows, pigs, chickens, sheep)?',
+            
+            # Abilities
+            'can_fly': 'Can it fly through the air?',
+            'can_swim': 'Can it swim in water?',
+            'can_climb': 'Can it climb trees or walls?',
+            
+            # Activity Patterns
+            'is_diurnal': 'Is it mostly active during the day?',
+            'is_nocturnal': 'Is it mostly active at night?',
+            'is_crepuscular': 'Is it most active at dawn and dusk?',
+            
+            # Behavior & Social
+            'makes_a_distinctive_sound': 'Does it make a recognizable sound or call?',
+            'is_social': 'Does it usually live in groups with others of its kind?',
+            'lives_solitary': 'Does it usually live alone?',
+            'lives_in_a_pack_or_herd': 'Does it live in packs, herds, or flocks?',
+            
+            # Reproduction
+            'lays_eggs': 'Does it lay eggs (rather than giving live birth)?',
+            
+            # Defense & Danger
+            'is_venomous': 'Is it venomous or poisonous to other animals?',
+            
+            # Diet
+            'is_carnivore': 'Does it eat only meat?',
+            'is_herbivore': 'Does it eat only plants and vegetation?',
+            'is_omnivore': 'Does it eat both meat and plants?',
+            'is_predator': 'Does it hunt and kill other animals for food?',
+            'is_insectivore': 'Does it mainly eat insects?',
+            'is_piscivore': 'Does it mainly eat fish?',
+            'is_scavenger': 'Does it mainly eat dead animals (carrion)?',
+            
+            # Conservation & Cultural
+            'is_endangered': 'Is it endangered or at risk of extinction?',
+            'is_symbolic': 'Is it an important symbol in cultures or countries?',
         }
-        
         return questions.get(feature, feature.replace('_', ' ').capitalize() + '?')
     
-    def save_correction(self, correct_animal):
-        """Save correction to dataset"""
-        if correct_animal not in self.animals:
-            new_row = {'animal_name': correct_animal}
-            for col in self.feature_cols:
-                new_row[col] = self.answered_features.get(col, 0.5)
-            self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
-            print(f"✓ Added: {correct_animal}")
+    def add_new_animal(self, animal_name):
+        """Add new animal to dataset with learned features"""
+        # Check if already exists
+        if animal_name.lower() in [a.lower() for a in self.animals]:
+            print(f"{animal_name} already exists in database. Updating its features...")
+            idx = [i for i, a in enumerate(self.animals) if a.lower() == animal_name.lower()][0]
+            # Update existing entry
+            for feature, value in self.answered_features.items():
+                self.df.at[idx, feature] = value
         else:
-            idx = self.df[self.df['animal_name'] == correct_animal].index[0]
-            for col, val in self.answered_features.items():
-                self.df.at[idx, col] = val
-            print(f"✓ Updated: {correct_animal}")
+            # Create new entry
+            new_row = {'animal_name': animal_name}
+            for feature in self.feature_cols:
+                new_row[feature] = self.answered_features.get(feature, 0.5)
+            
+            # Append to dataframe
+            self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
         
+        # Save to CSV
         self.df.to_csv(self.csv_path, index=False)
+        print(f"✓ Added/Updated {animal_name} to database!")
+        print(f"✓ Saved to {self.csv_path}")
+        
+        # Retrain model
+        print("✓ Retraining neural network...")
+        self.animals = self.df['animal_name'].values
+        self.feature_tensor = torch.FloatTensor(self.df[self.feature_cols].values).to(self.device)
+        self.train_assistant()
+        print("✓ Model updated and ready!")
     
     def play(self):
         """Main game loop"""
-        print("=" * 70)
-        print("🎮 FAST FUZZY ANIMAL GUESSER")
-        print("   Naive Bayes + PyTorch Neural Network")
-        print("=" * 70)
-        print("Think of an animal! Answer with:")
-        print("  ✓ yes / no")
-        print("  ~ probably / probably not")  
-        print("  ? idk (don't know)")
+        print("\n" + "="*60)
+        print("PAOKINATOR")
+        print("Read your mind with PyTorch and some statistics")
+        print("="*60)
+        print("Answer: yes, no, probably, probably not, idk")
         print()
         
-        questions_asked = 0
-        max_questions = 25
-        
-        while questions_asked < max_questions:
-            # Get and ask best question
-            best_feature = self.get_best_question()
-            
-            if best_feature is None:
-                print("\n⚠️ No more questions available!")
+        for q_num in range(1, 21):
+            feature = self.get_best_question()
+            if not feature:
                 break
             
-            question = self.format_question(best_feature)
-            print(f"\n❓ Q{questions_asked + 1}: {question}")
-            answer = input("   → ").strip().lower()
+            question = self.format_question(feature)
+            print(f"\nQ{q_num}: {question}")
+            answer = input("-> ").strip().lower()
             
-            if answer in self.fuzzy_map:
-                fuzzy_value = self.fuzzy_map[answer]
-                self.answered_features[best_feature] = fuzzy_value
-                self.asked_questions.add(best_feature)
-                self.update_probabilities_fuzzy(best_feature, fuzzy_value)
-                questions_asked += 1
-                
-                # Show interpretation
-                symbols = {1.0: '✓', 0.75: '~', 0.5: '?', 0.25: '~', 0.0: '✗'}
-                print(f"   {symbols.get(fuzzy_value, '•')}", end=" ")
-            else:
-                print("   Valid: yes, no, probably, probably not, idk")
+            if answer not in self.fuzzy_map:
+                print("   Try: yes, no, probably, probably not, idk")
                 continue
             
-            # Show current top guess
-            top_preds = self.get_top_predictions(3)
-            top_animal, top_prob = top_preds[0]
-            print(f"Thinking: {top_animal} ({top_prob:.0%})", end="")
+            fuzzy_val = self.fuzzy_map[answer]
+            self.answered_features[feature] = fuzzy_val
+            self.asked_questions.add(feature)
+            self.update_probabilities(feature, fuzzy_val)
             
-            if len(top_preds) > 1 and top_preds[1][1] > 0.15:
-                print(f" / {top_preds[1][0]} ({top_preds[1][1]:.0%})")
-            else:
-                print()
-            
-            # Make confident guess
-            if top_prob > 0.75 and questions_asked >= 5:
-                print(f"\n💡 I'm {top_prob:.0%} confident!")
-                print(f"🎯 Is it a {top_animal}?")
-                guess_answer = input("   → ").strip().lower()
-                
-                if guess_answer in ['yes', 'y']:
-                    print(f"\n🎉 YES! Got it in {questions_asked} questions!")
-                    print(f"\n📊 Confidence breakdown:")
-                    for i, (animal, prob) in enumerate(top_preds, 1):
-                        bar = '█' * int(prob * 20)
-                        print(f"  {i}. {animal:20s} {bar} {prob:.1%}")
+            # Guess when confident
+            top = self.get_predictions(1)[0]
+            if top[1] > 0.75 and q_num >= 5:
+                print(f"\nI think it's a {top[0]}. Am I correct?")
+                if input("-> ").strip().lower() in ['yes', 'y']:
+                    print(f"\n🎉 I told you! Got it in {q_num} questions.")
+                    print("In a moment I knew it all along.")
                     return
-                elif guess_answer in ['no', 'n']:
-                    print("   ❌ Oops! Continuing...")
-                    # Eliminate this guess
-                    animal_idx = np.where(self.animals == top_animal)[0][0]
-                    self.probabilities[animal_idx] = 0.001
+                else:
+                    # Wrong guess - eliminate it
+                    idx = np.where(self.animals == top[0])[0][0]
+                    self.probabilities[idx] = 0.001
                     self.probabilities /= self.probabilities.sum()
+                    print("Hmm, interesting. Let me recalculate in a moment...")
         
-        # Final guess
-        top_preds = self.get_top_predictions(5)
-        print(f"\n🤔 After {questions_asked} questions, my best guesses:")
-        for i, (animal, prob) in enumerate(top_preds, 1):
-            bar = '█' * int(prob * 20)
-            print(f"  {i}. {animal:20s} {bar} {prob:.1%}")
+        # Final guesses - show top 3
+        print(f"\nLet me think about this in a moment...")
+        print(f"\nMy top 3 predictions:")
+        for i, (animal, prob) in enumerate(self.get_predictions(3), 1):
+            print(f"  {i}. {animal:25s} ({prob:.1%})")
         
-        print(f"\n🎯 Final answer: Is it a {top_preds[0][0]}?")
-        answer = input("   → ").strip().lower()
-        
-        if answer in ['yes', 'y']:
-            print("\n🎉 Got it!")
+        top = self.get_predictions(1)[0][0]
+        print(f"\nFinal answer: {top}?")
+        if input("-> ").strip().lower() in ['yes', 'y']:
+            print("\n🎉 I told you! The math never lies.")
         else:
-            correct = input("\n❌ What was it? → ").strip()
+            correct = input("\nWhat was it? -> ").strip()
             if correct:
-                self.save_correction(correct)
-                print("   Thanks! I've learned something new! 📚")
+                print(f"\n📚 Learning time! Adding {correct} to my database...")
+                self.add_new_animal(correct)
+                print("In a moment I'll get it right next time!")
 
 if __name__ == "__main__":
-    game = FastFuzzyGuesser('animalfulldata.csv')
-    game.play()
+    game = Paokinator('animalfulldata.csv')
+    
+    while True:
+        game.play()
+        if input("\nPlay again? (y/n) -> ").lower() != 'y':
+            print("\nThank you for playing! In a moment you'll be back.")
+            break
+        game.reset_game()
