@@ -1,0 +1,78 @@
+{
+  "is_mammal": "Is it a mammal?",
+  "is_bird": "Is it a bird?",
+  "is_reptile": "Is it a reptile?",
+  "is_fish": "Is it a fish?",
+  "is_amphibian": "Is it an amphibian?",
+  "is_insect": "Is it an insect?",
+  "is_arachnid": "Is it a spider or scorpion?",
+  "is_crustacean": "Is it a crab or lobster?",
+  "is_mollusc": "Is it a snail or octopus?",
+  
+  "is_tiny": "Is it smaller than your hand?",
+  "is_small": "Is it about cat-sized or smaller?",
+  "is_medium": "Is it medium-sized (like a large dog)?",
+  "is_large": "Is it large (like a horse)?",
+  "is_very_large": "Is it very large (like an elephant)?",
+  "is_massive": "Is it massive (like a blue whale)?",
+  
+  "has_fur": "Does it have fur or hair?",
+  "has_feathers": "Does it have feathers?",
+  "has_scales": "Does it have scales?",
+  "has_shell": "Does it have a hard shell?",
+  "has_exoskeleton": "Does it have a hard outer skeleton (like an insect)?",
+  "has_wings": "Does it have wings?",
+  "has_tail": "Does it have a tail?",
+  "has_fins": "Does it have fins?",
+  "has_claws": "Does it have claws?",
+  "has_horns": "Does it have horns or antlers?",
+  "has_tusks": "Does it have tusks?",
+  
+  "is_long_and_slender": "Is its body long and slender?",
+  "is_stout_and_bulky": "Is its body stout and bulky?",
+  "has_spots": "Does it have spots?",
+  "has_stripes": "Does it have stripes?",
+  "has_mane": "Does it have a mane?",
+  "can_change_color": "Can it change its color?",
+  
+  "lives_in_ocean": "Does it live in the ocean?",
+  "lives_in_freshwater": "Does it live in rivers or lakes?",
+  "lives_on_land": "Does it primarily live on land?",
+  "lives_in_forest": "Does it live in a forest?",
+  "lives_in_jungle": "Does it live in a jungle?",
+  "lives_in_grassland": "Does it live in grasslands or a savanna?",
+  "lives_in_mountains": "Does it live in the mountains?",
+  "lives_in_desert": "Does it live in a desert?",
+  "lives_in_arctic": "Does it live in a cold, arctic region?",
+  
+  "is_domesticated": "Is it commonly kept as a pet?",
+  "is_farm_animal": "Is it considered a farm animal?",
+  
+  "can_fly": "Can it fly?",
+  "can_swim": "Is it a good swimmer?",
+  "can_climb": "Is it known for climbing?",
+  
+  "is_diurnal": "Is it mostly active during the day?",
+  "is_nocturnal": "Is it mostly active at night?",
+  "is_crepuscular": "Is it most active at dawn and dusk?",
+  
+  "makes_a_distinctive_sound": "Does it make a well-known sound?",
+  
+  "is_social": "Does it live in social groups?",
+  "lives_solitary": "Does it usually live alone?",
+  "lives_in_a_pack_or_herd": "Does it live in a pack, herd, or flock?",
+  
+  "lays_eggs": "Does it lay eggs?",
+  "is_venomous": "Is it venomous or poisonous?",
+  
+  "is_carnivore": "Does it eat only meat?",
+  "is_herbivore": "Does it eat only plants?",
+  "is_omnivore": "Does it eat both plants and meat?",
+  "is_predator": "Does it hunt other animals for food?",
+  "is_insectivore": "Does it mainly eat insects?",
+  "is_piscivore": "Does it mainly eat fish?",
+  "is_scavenger": "Does it eat dead animals?",
+  
+  "is_endangered": "Is it an endangered species?",
+  "is_symbolic": "Is it a famous symbol for a country or culture?"
+}
