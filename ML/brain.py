@@ -1,11 +1,9 @@
-# app.py - High-Performance Bayesian Akinator
+# brain.py - High-Performance Bayesian Akinator Logic
 import pandas as pd
 import numpy as np
 from scipy.stats import entropy
-from flask import Flask, request, jsonify
 import json
 import os
-import uuid
 import random
 
 # --- Feature Processing Module (NumPy-based) ---
@@ -107,8 +105,6 @@ class QuestionSelector:
         self.processor = processor
         self.engine = bayesian_engine
         
-# --- In the QuestionSelector Class ---
-
     def select_next_question(self, probabilities, asked_features):
         """
         Chooses the next question by finding a feature that maximizes information gain.
@@ -154,6 +150,7 @@ class QuestionSelector:
         question = self.questions_map.get(feature, f"Is it known for having {feature.replace('_', ' ')}?")
         
         return feature, question
+
 # --- Main Service ---
 class AkinatorService:
     """Manages the overall game logic, state, and data persistence."""
@@ -178,7 +175,7 @@ class AkinatorService:
             'maybe': 0.5, 'idk': 0.5, '?': 0.5,
             'probably not': 0.25, 'no': 0.0, 'n': 0.0
         }
-        print("✅ Akinator service initialized successfully.")
+        print("✅ Akinator brain initialized successfully.")
         
     def _initialize_modules(self):
         """Helper to initialize or re-initialize processing modules when data changes."""
@@ -188,6 +185,14 @@ class AkinatorService:
         self.question_selector = QuestionSelector(
             self.feature_cols, self.questions_map, self.processor, self.bayesian
         )
+
+    def create_initial_state(self):
+        """Returns the initial state for a new game."""
+        return {
+            'probabilities': self.bayesian.get_uniform_prior().tolist(),
+            'answered_features': {}, # Stores feature:fuzzy_value
+            'asked_features': set()  # Stores feature names
+        }
 
     def update_beliefs(self, probabilities, feature, fuzzy_value):
         """Update animal probabilities based on a new answer."""
@@ -217,88 +222,3 @@ class AkinatorService:
         self._initialize_modules()
         self.animals = self.df['animal_name'].values
         print(f"🧠 Learned new animal: {name}")
-
-# --- Flask API ---
-app = Flask(__name__)
-service = AkinatorService()
-games = {} # In-memory store for game states
-
-@app.route('/game/start', methods=['POST'])
-def start_game():
-    game_id = str(uuid.uuid4())
-    games[game_id] = {
-        'probabilities': service.bayesian.get_uniform_prior().tolist(),
-        'answered_features': {}, # Stores feature:fuzzy_value
-        'asked_features': set()    # Stores feature names
-    }
-    return jsonify({'game_id': game_id})
-
-@app.route('/game/<game_id>/question', methods=['GET'])
-def get_question(game_id):
-    if game_id not in games:
-        return jsonify({'error': 'Game not found'}), 404
-    
-    game_state = games[game_id]
-    result = service.question_selector.select_next_question(
-        np.array(game_state['probabilities']), game_state['asked_features']
-    )
-    
-    if not result:
-        # No more questions to ask, return final predictions
-        final_predictions = service.get_top_predictions(np.array(game_state['probabilities']))
-        return jsonify({'status': 'NO_MORE_QUESTIONS', 'predictions': final_predictions})
-    
-    feature, question = result
-    return jsonify({'feature': feature, 'question': question})
-
-@app.route('/game/<game_id>/answer', methods=['POST'])
-def answer(game_id):
-    if game_id not in games:
-        return jsonify({'error': 'Game not found'}), 404
-        
-    data = request.json
-    feature = data.get('feature')
-    user_answer = data.get('answer', '').lower()
-    
-    if user_answer not in service.fuzzy_map:
-        return jsonify({'error': f"Invalid answer. Please use one of: {list(service.fuzzy_map.keys())}"}), 400
-
-    game_state = games[game_id]
-    fuzzy_value = service.fuzzy_map[user_answer]
-    
-    # Store the answer and mark the question as asked
-    game_state['answered_features'][feature] = fuzzy_value
-    game_state['asked_features'].add(feature)
-    
-    # Update probabilities
-    new_probs = service.update_beliefs(np.array(game_state['probabilities']), feature, fuzzy_value)
-    game_state['probabilities'] = new_probs.tolist()
-    
-    predictions = service.get_top_predictions(new_probs)
-    return jsonify({'predictions': predictions})
-
-@app.route('/game/<game_id>/learn', methods=['POST'])
-def learn(game_id):
-    if game_id not in games:
-        return jsonify({'error': 'Game not found'}), 404
-        
-    correct_animal_name = request.json.get('correct_animal')
-    if not correct_animal_name:
-        return jsonify({'error': 'The key `correct_animal` is required.'}), 400
-        
-    service.learn_new_animal(correct_animal_name, games[game_id]['answered_features'])
-    return jsonify({'message': f"Thank you! I've learned about {correct_animal_name}."})
-
-@app.route('/game/<game_id>/end', methods=['DELETE'])
-def end_game(game_id):
-    if game_id in games:
-        del games[game_id]
-        return jsonify({'message': 'Game ended and state cleared.'})
-    return jsonify({'error': 'Game not found'}), 404
-
-if __name__ == '__main__':
-    if not os.path.exists('animalfulldata.csv'):
-        print("❌ Error: 'animalfulldata.csv' not found in the current directory.")
-        print("Please create this file with 'animal_name' as the first column.")
-    else:
-        app.run(host='0.0.0.0', port=5000, debug=True)
