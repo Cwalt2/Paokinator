@@ -1,88 +1,105 @@
-# brain.py - High-Performance Bayesian Akinator Logic
+# brain.py - High-Performance Bayesian Akinator Logic (TRULY FIXED)
 import pandas as pd
 import numpy as np
 from scipy.stats import entropy
 import json
 import os
-import random
 
 # --- Feature Processing Module (NumPy-based) ---
 class FeatureProcessor:
     """Handles feature similarity computations using NumPy for speed."""
     def __init__(self, feature_matrix):
-        """
-        Initializes the processor with a NumPy array of features.
-        Args:
-            feature_matrix (np.ndarray): A matrix where rows are animals and columns are features.
-        """
         self.features = np.array(feature_matrix, dtype=np.float32)
         
     def compute_likelihood(self, feature_idx, target_value):
         """
-        Computes a likelihood score for a given feature and a user's answer.
-        This score represents P(Answer | Animal).
-        
-        Args:
-            feature_idx (int): The column index of the feature.
-            target_value (float): The user's fuzzy answer, mapped to a float (e.g., 'yes' -> 1.0).
-            
-        Returns:
-            np.ndarray: A 1D array of likelihood scores for all animals.
+        Computes likelihood P(Answer | Animal) with AGGRESSIVE discrimination.
         """
         feature_vector = self.features[:, feature_idx]
         distances = np.abs(target_value - feature_vector)
         
-        # An adaptive uncertainty factor: be more certain about definitive answers ('yes'/'no')
-        uncertainty = 2.0 if abs(target_value - 0.5) > 0.3 else 1.5
+        # MUCH MORE AGGRESSIVE penalties
+        if abs(target_value - 0.5) > 0.3:  # yes or no
+            # Exponential with very steep falloff
+            likelihood = np.exp(-8.0 * distances)
+            
+            # NUCLEAR penalty for complete opposites
+            opposite_mask = (distances > 0.7)
+            likelihood[opposite_mask] = 0.001  # Nearly eliminate
+        else:  # maybe/idk
+            likelihood = np.exp(-3.0 * distances)
         
-        # Use an exponential decay function to model similarity as likelihood
-        likelihood = np.exp(-uncertainty * distances)
-        return likelihood
+        return np.clip(likelihood, 0.001, 1.0)  # Never go to pure zero
 
 # --- Bayesian Engine Module ---
 class BayesianEngine:
-    """Core probabilistic reasoning engine using Naive Bayes and Information Gain."""
+    """Core probabilistic reasoning engine."""
     def __init__(self, n_animals):
         self.n_animals = n_animals
+        self.rejected_animals = set()  # Track rejected guesses
     
     def get_uniform_prior(self):
-        """Initializes game with a uniform probability distribution (all animals are equally likely)."""
         return np.ones(self.n_animals) / self.n_animals
     
     def bayesian_update(self, prior, likelihood):
-        """
-        Applies Bayes' rule to update probabilities.
-        Posterior ∝ Likelihood × Prior
-        """
+        """Bayes' rule with rejection handling."""
         posterior = prior * likelihood
-        # Normalize to ensure the probabilities sum to 1
-        return posterior / (posterior.sum() + 1e-10)
         
-    def compute_info_gain(self, prior, feature_likelihood_func):
-        """
-        Calculates the expected information gain (entropy reduction) for asking about a feature.
-        This determines the "best" question to ask.
-        """
+        # Zero out rejected animals
+        for idx in self.rejected_animals:
+            posterior[idx] = 0.0
+            
+        return posterior / (posterior.sum() + 1e-10)
+    
+    def reject_animal(self, animal_idx):
+        """Permanently eliminate an animal from consideration."""
+        self.rejected_animals.add(animal_idx)
+        
+    def reset_rejections(self):
+        """Clear rejections for new game."""
+        self.rejected_animals.clear()
+        
+    def compute_info_gain(self, prior, feature_idx, feature_vector):
+        """Calculate expected information gain."""
+        # Skip if no entropy left
         current_entropy = entropy(prior + 1e-10)
+        if current_entropy < 0.01:
+            return 0.0
+        
+        possible_answers = [1.0, 0.75, 0.5, 0.25, 0.0]
         expected_entropy = 0.0
         
-        # We model the user's possible answers to calculate the expected entropy after the question.
-        possible_answers = [(1.0, 0.4), (0.5, 0.2), (0.0, 0.4)]
-        
-        for fuzzy_val, weight in possible_answers:
-            likelihoods = feature_likelihood_func(fuzzy_val)
-            # P(Answer) = Σ P(Answer | Animal) * P(Animal)
+        for fuzzy_val in possible_answers:
+            distances = np.abs(fuzzy_val - feature_vector)
+            
+            # Match the aggressive likelihood computation
+            if abs(fuzzy_val - 0.5) > 0.3:
+                likelihoods = np.exp(-8.0 * distances)
+                opposite_mask = (distances > 0.7)
+                likelihoods[opposite_mask] = 0.001
+            else:
+                likelihoods = np.exp(-3.0 * distances)
+            
+            likelihoods = np.clip(likelihoods, 0.001, 1.0)
+            
+            # Zero out rejected animals
+            for idx in self.rejected_animals:
+                likelihoods[idx] = 0.0
+            
             prob_answer = np.dot(prior, likelihoods)
             
             if prob_answer > 1e-10:
-                posterior = self.bayesian_update(prior, likelihoods)
-                expected_entropy += weight * entropy(posterior + 1e-10) # Using weight instead of prob_answer
+                posterior = prior * likelihoods
+                for idx in self.rejected_animals:
+                    posterior[idx] = 0.0
+                posterior = posterior / (posterior.sum() + 1e-10)
+                expected_entropy += prob_answer * entropy(posterior + 1e-10)
                 
         return current_entropy - expected_entropy
 
 # --- Question Selection Module ---
 class QuestionSelector:
-    """Intelligently selects the most informative questions to ask."""
+    """Intelligently selects questions."""
     def __init__(self, feature_cols, questions_map, processor, bayesian_engine):
         self.feature_cols = feature_cols
         self.questions_map = questions_map
@@ -90,36 +107,24 @@ class QuestionSelector:
         self.engine = bayesian_engine
         
     def select_next_question(self, probabilities, asked_features):
-        """
-        Chooses the next question. The first question is random, and all subsequent
-        questions are chosen to maximize information gain.
-        """
+        """Always pick the most informative question."""
         available_indices = [i for i, f in enumerate(self.feature_cols) if f not in asked_features]
         
         if not available_indices:
             return None
             
-        # --- Smart Question Selection Logic ---
-        # If it's the first question of the game, pick a random one to start.
-        if len(asked_features) == 0:
-            best_feature_idx = random.choice(available_indices)
-        else:
-            # From the second question onwards, be strictly optimal (greedy).
-            gains = []
-            for idx in available_indices:
-                likelihood_func = lambda val: self.processor.compute_likelihood(idx, val)
-                gain = self.engine.compute_info_gain(probabilities, likelihood_func)
-                gains.append((gain, idx))
-            
-            # Sort by gain to find the most informative question.
-            gains.sort(key=lambda x: x[0], reverse=True)
-            
-            if not gains:
-                return None
-            
-            # Pick the question with the highest gain.
-            _, best_feature_idx = gains[0]
-
+        gains = []
+        for idx in available_indices:
+            feature_vector = self.processor.features[:, idx]
+            gain = self.engine.compute_info_gain(probabilities, idx, feature_vector)
+            gains.append((gain, idx))
+        
+        gains.sort(key=lambda x: x[0], reverse=True)
+        
+        if not gains:
+            return None
+        
+        _, best_feature_idx = gains[0]
         feature = self.feature_cols[best_feature_idx]
         question = self.questions_map.get(feature, f"Does it have the characteristic: {feature.replace('_', ' ')}?")
         
@@ -127,7 +132,7 @@ class QuestionSelector:
 
 # --- Main Service ---
 class AkinatorService:
-    """Manages the overall game logic, state, and data persistence."""
+    """Manages the game logic."""
     def __init__(self, csv_path='animalfulldata.csv', questions_path='questions.json'):
         self.csv_path = csv_path
         self.questions_path = questions_path
@@ -153,9 +158,7 @@ class AkinatorService:
         print("✅ Akinator brain initialized successfully.")
         
     def _initialize_modules(self):
-        """Helper to re-initialize all modules when the underlying data changes."""
         self.animals = self.df['animal_name'].values
-        # Store a lowercase version for fast, case-insensitive lookups
         self.lower_case_animals = self.df['animal_name'].str.lower().values
         
         feature_matrix = self.df[self.feature_cols].values
@@ -166,29 +169,30 @@ class AkinatorService:
         )
 
     def create_initial_state(self):
-        """Returns the initial state dictionary for a new game."""
+        """Returns initial state for a new game."""
+        # Reset rejections for new game
+        self.bayesian.reset_rejections()
+        
         return {
             'probabilities': self.bayesian.get_uniform_prior().tolist(),
-            'answered_features': {}, # Stores {feature: fuzzy_value}
-            'asked_features': []      # Stores [feature_name]
+            'answered_features': {},
+            'asked_features': [],
+            'rejected_animals': []  # Track rejected guesses
         }
 
     def get_next_question(self, game_state):
-        """Public method to get the next question based on the current game state."""
-        # Convert state from lists (JSON) back to numpy arrays for computation
+        """Get the next question."""
         probabilities = np.array(game_state['probabilities'])
         asked_features = set(game_state['asked_features'])
         return self.question_selector.select_next_question(probabilities, asked_features)
 
     def process_answer(self, game_state, feature, user_answer):
-        """Public method to process a user's answer and update the game state."""
+        """Process a user's answer and update state."""
         fuzzy_value = self.fuzzy_map[user_answer.lower().strip()]
         
-        # Update state history
         game_state['asked_features'].append(feature)
         game_state['answered_features'][feature] = fuzzy_value
         
-        # Update beliefs
         probabilities = np.array(game_state['probabilities'])
         feature_idx = self.feature_cols.index(feature)
         likelihood = self.processor.compute_likelihood(feature_idx, fuzzy_value)
@@ -196,45 +200,103 @@ class AkinatorService:
         
         game_state['probabilities'] = new_probabilities.tolist()
         return game_state
+    
+    def reject_guess(self, game_state, animal_name):
+        """
+        CRITICAL NEW METHOD: Mark an animal as rejected.
+        This ELIMINATES it from future consideration.
+        """
+        # Find the animal index
+        animal_name_lower = animal_name.lower()
+        matching_indices = np.where(self.lower_case_animals == animal_name_lower)[0]
+        
+        if len(matching_indices) > 0:
+            animal_idx = matching_indices[0]
+            
+            # Add to rejection tracking
+            self.bayesian.reject_animal(animal_idx)
+            game_state['rejected_animals'].append(animal_name)
+            
+            # ZERO OUT the probability immediately
+            probabilities = np.array(game_state['probabilities'])
+            probabilities[animal_idx] = 0.0
+            
+            # Renormalize
+            if probabilities.sum() > 0:
+                probabilities = probabilities / probabilities.sum()
+            else:
+                # All rejected? Reset to uniform (shouldn't happen)
+                probabilities = self.bayesian.get_uniform_prior()
+                
+            game_state['probabilities'] = probabilities.tolist()
+        
+        return game_state
+    
+    def should_make_guess(self, game_state, threshold=0.15):
+        """
+        Determine if we should make a guess.
+        CHANGED: Higher threshold and only after enough questions.
+        """
+        probabilities = np.array(game_state['probabilities'])
+        max_prob = probabilities.max()
+        num_questions = len(game_state['asked_features'])
+        
+        # Don't guess too early
+        if num_questions < 5:
+            return False, None
+        
+        # Need strong confidence
+        if max_prob < threshold:
+            return False, None
+            
+        # Get the top candidate
+        top_idx = probabilities.argmax()
+        animal_name = self.animals[top_idx]
+        
+        # Don't guess if already rejected
+        if animal_name in game_state.get('rejected_animals', []):
+            return False, None
+            
+        return True, animal_name
         
     def get_top_predictions(self, game_state, n=5):
-        """Return the top N most likely animals from the current game state."""
+        """Return top N animals, excluding rejected ones."""
         probabilities = np.array(game_state['probabilities'])
-        top_indices = np.argsort(probabilities)[::-1][:n]
-        return [(self.animals[i], float(probabilities[i])) for i in top_indices]
+        rejected = set(game_state.get('rejected_animals', []))
+        
+        # Get sorted indices
+        top_indices = np.argsort(probabilities)[::-1]
+        
+        # Filter out rejected animals
+        results = []
+        for idx in top_indices:
+            animal_name = self.animals[idx]
+            if animal_name not in rejected:
+                results.append((animal_name, float(probabilities[idx])))
+                if len(results) >= n:
+                    break
+                    
+        return results
         
     def learn_new_animal(self, name, answered_features):
-        """
-        Adds a new animal or updates an existing one in the dataset.
-        Handles case-insensitivity and prevents duplicates.
-        """
+        """Add or update an animal in the dataset."""
         clean_name = name.strip()
         
-        # --- UPDATE OR ADD LOGIC ---
         if clean_name.lower() in self.lower_case_animals:
-            # UPDATE EXISTING ANIMAL
-            # Find the exact index of the animal to update
+            # UPDATE EXISTING
             animal_index = self.df[self.df['animal_name'].str.lower() == clean_name.lower()].index[0]
             
-            # Update only the features that were answered in this game
             for feature, value in answered_features.items():
                 self.df.loc[animal_index, feature] = value
             print(f"🧠 Updated existing animal: {self.df.loc[animal_index, 'animal_name']}")
-
         else:
-            # ADD NEW ANIMAL
-            # Capitalize for consistency
+            # ADD NEW
             new_name = clean_name.capitalize()
             new_row = {'animal_name': new_name}
-            # Use provided answers, defaulting to 0.5 (unknown) for unasked questions
             new_row.update({f: answered_features.get(f, 0.5) for f in self.feature_cols})
             
             self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
             print(f"🧠 Learned new animal: {new_name}")
 
-        # --- SAVE AND RE-INITIALIZE ---
-        # Save the updated dataframe back to the CSV
         self.df.to_csv(self.csv_path, index=False)
-        
-        # Re-initialize all modules with the new data so changes take effect immediately
         self._initialize_modules()
