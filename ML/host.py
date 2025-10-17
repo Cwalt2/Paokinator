@@ -37,21 +37,21 @@ def get_question(session_id):
     result = service.get_next_question(game_state)
     
     if result is None:
-        # No more questions available
-        top_predictions = service.get_top_predictions(game_state, n=1)
+        # No more questions available, return top 3 for final guess
+        top_predictions = service.get_top_predictions(game_state, n=3)
         return jsonify({
             'question': None,
             'feature': None,
-            'top_prediction': top_predictions[0] if top_predictions else None
+            'top_predictions': top_predictions # CHANGED: Now sends a list
         })
     
     feature, question = result
-    top_predictions = service.get_top_predictions(game_state, n=1)
+    top_prediction = service.get_top_predictions(game_state, n=1)
     
     return jsonify({
         'question': question,
         'feature': feature,
-        'top_prediction': top_predictions[0] if top_predictions else None,
+        'top_prediction': top_prediction[0] if top_prediction else None,
         'should_guess': False
     })
 
@@ -71,7 +71,10 @@ def submit_answer(session_id):
     game_state = sessions[session_id]
     service.process_answer(game_state, feature, answer)
     
-    return jsonify({'status': 'ok'})
+    # Return the top predictions after an answer
+    top_predictions = service.get_top_predictions(game_state, n=5)
+    return jsonify({'status': 'ok', 'top_predictions': top_predictions})
+
 
 @app.route('/reject/<session_id>', methods=['POST'])
 def reject_animal(session_id):
@@ -88,7 +91,13 @@ def reject_animal(session_id):
     game_state = sessions[session_id]
     service.reject_guess(game_state, animal_name)
     
-    return jsonify({'status': 'rejected', 'animal': animal_name})
+    # Return updated predictions after rejection
+    top_predictions = service.get_top_predictions(game_state, n=5)
+    return jsonify({
+        'status': 'rejected',
+        'animal': animal_name,
+        'top_predictions': top_predictions
+    })
 
 @app.route('/learn/<session_id>', methods=['POST'])
 def learn_animal(session_id):
@@ -108,7 +117,8 @@ def learn_animal(session_id):
     service.learn_new_animal(animal_name, answered_features)
     
     # Clean up session
-    del sessions[session_id]
+    if session_id in sessions:
+        del sessions[session_id]
     
     return jsonify({
         'message': f"Thank you! I've learned about {animal_name}.",

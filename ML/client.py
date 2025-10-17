@@ -1,4 +1,4 @@
-# client.py - Fixed Client with Proper Rejection Handling
+# client.py - Fixed Client with Proper Rejection Handling and Final Guess Logic
 import requests
 import sys
 
@@ -6,9 +6,16 @@ BASE_URL = "http://127.0.0.1:5000"
 
 def start_game():
     """Start a new game session."""
-    response = requests.post(f"{BASE_URL}/start")
-    data = response.json()
-    return data['session_id']
+    try:
+        response = requests.post(f"{BASE_URL}/start")
+        response.raise_for_status()
+        data = response.json()
+        return data['session_id']
+    except requests.exceptions.RequestException as e:
+        print(f"Error starting game: Cannot connect to the server at {BASE_URL}.")
+        print("Please make sure the server.py script is running.")
+        sys.exit(1)
+
 
 def get_question(session_id):
     """Get the next question."""
@@ -42,79 +49,83 @@ def play_game():
     session_id = start_game()
     print(f"Started a new game! Session ID: {session_id}")
     print("=" * 50)
-    print("Paokinator - I will guess what is on your mind in a moment.")
+    print("Paokinator - I will guess the animal on your mind.")
     print("=" * 50)
     print("Answer with: yes, no, probably, probably not, idk")
-    
+
     question_count = 0
-    max_questions = 20
-    
+    max_questions = 25
+
     while question_count < max_questions:
         # Get next question
         q_data = get_question(session_id)
-        
+
         if 'error' in q_data:
             print(f"Error: {q_data['error']}")
             break
-            
+
+        # This is the high-confidence "Is it an X?" question
         if q_data.get('should_guess', False):
-            # CHANGED: Ask as a tentative question, not a declaration
             guess = q_data['guess']
             question_count += 1
-            print(f"Q{question_count}: Could it be a {guess}? (yes/no)")
+            print(f"Q{question_count}: Is it a {guess}?")
             user_input = input("-> ").strip().lower()
-            
+
             if user_input in ['yes', 'y']:
-                print(f"🎉 Awesome! I guessed it was a {guess}!")
+                print(f"🎉 Awesome! I knew it was a {guess}!")
                 return
             else:
-                # CRITICAL: Tell the server this guess is WRONG
-                result = reject_guess(session_id, guess)
-                # Show updated top 5 after rejection
-                if 'top_predictions' in result:
-                    print(f"\n  📊 Top 5 possibilities now:")
-                    for i, (animal, prob) in enumerate(result['top_predictions'], 1):
-                        print(f"     {i}. {animal} ({prob*100:.2f}%)")
+                reject_guess(session_id, guess)
                 continue
         
+        # This handles the end-of-game scenario
+        if q_data.get('top_predictions'):
+            break # Exit loop to go to final guess logic
+
         # Regular question
         question = q_data['question']
         feature = q_data['feature']
-        top_guess = q_data['top_prediction']
         
         question_count += 1
-        print(f"Q{question_count}: {question}")
-        user_answer = input("-> ").strip()
-        
-        if not user_answer:
+        print(f"\nQ{question_count}: {question}")
+        user_answer = input("-> ").strip().lower()
+
+        if user_answer not in ['yes', 'y', 'no', 'n', 'probably', 'probably not', 'idk', '?']:
+            print("  (Invalid answer, assuming 'idk')")
             user_answer = 'idk'
-        
+
         # Submit answer
-        result = submit_answer(session_id, feature, user_answer)
+        submit_answer(session_id, feature, user_answer)
+
+    # --- FINAL GUESS LOGIC ---
+    print("\n" + "=" * 50)
+    print("Okay, I've asked enough questions. Time for my final guess!")
+    final_q_data = get_question(session_id) # Get final predictions
+
+    if final_q_data.get('top_predictions'):
+        predictions = final_q_data['top_predictions']
+        final_guess = predictions[0][0]
+
+        # Display runner-ups if they exist
+        runner_ups = [p[0] for p in predictions[1:]]
         
-        # Show current top guess (not as a final answer)
-        if top_guess:
-            print(f"  My top guess is now: {top_guess[0]} ({top_guess[1]*100:.2f}%)")
-    
-    # After max questions, make a final guess
-    print("\nOkay, I've gathered enough information.")
-    q_data = get_question(session_id)
-    
-    if q_data.get('top_prediction'):
-        final_guess = q_data['top_prediction'][0]
-        print(f"My final guess is a {final_guess}. Is that right? (y/n)")
+        print(f"My final guess is a {final_guess}.")
+        if runner_ups:
+            print(f"My runner-up guesses are: {', '.join(runner_ups)}.")
+
+        print(f"\nIs {final_guess} the correct animal? (yes/no)")
         final_answer = input("-> ").strip().lower()
         
         if final_answer in ['yes', 'y']:
             print(f"🎉 Yes! I got it!")
             return
-    
-    # Ask what it actually was
-    print("What was it? ", end='')
+
+    # If the guess was wrong or no predictions were available
+    print("\nDarn! You've beaten me. What was the animal?")
     actual_animal = input("-> ").strip()
-    
+
     if actual_animal:
-        print("Updating my knowledge... This might take a moment.")
+        print("Thank you! I'm updating my knowledge for next time...")
         learn_result = submit_final_answer(session_id, actual_animal)
         print(f"Server response: {learn_result.get('message', 'Updated!')}")
 
