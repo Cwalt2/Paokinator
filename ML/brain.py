@@ -53,13 +53,6 @@ class BayesianEngine:
         """
         Applies Bayes' rule to update probabilities.
         Posterior ∝ Likelihood × Prior
-        
-        Args:
-            prior (np.ndarray): The current probability distribution over animals.
-            likelihood (np.ndarray): The likelihood of the evidence given each animal.
-            
-        Returns:
-            np.ndarray: The updated (posterior) probability distribution.
         """
         posterior = prior * likelihood
         # Normalize to ensure the probabilities sum to 1
@@ -69,30 +62,21 @@ class BayesianEngine:
         """
         Calculates the expected information gain (entropy reduction) for asking about a feature.
         This determines the "best" question to ask.
-        
-        Args:
-            prior (np.ndarray): The current probability distribution.
-            feature_likelihood_func (function): A function that takes a fuzzy value (0-1) and returns likelihoods.
-            
-        Returns:
-            float: The calculated information gain.
         """
         current_entropy = entropy(prior + 1e-10)
         expected_entropy = 0.0
         
         # We model the user's possible answers to calculate the expected entropy after the question.
-        # These represent 'Yes', 'Maybe', and 'No' with weights based on their likely frequency.
         possible_answers = [(1.0, 0.4), (0.5, 0.2), (0.0, 0.4)]
         
         for fuzzy_val, weight in possible_answers:
             likelihoods = feature_likelihood_func(fuzzy_val)
-            
             # P(Answer) = Σ P(Answer | Animal) * P(Animal)
             prob_answer = np.dot(prior, likelihoods)
             
             if prob_answer > 1e-10:
                 posterior = self.bayesian_update(prior, likelihoods)
-                expected_entropy += weight * entropy(posterior + 1e-10)
+                expected_entropy += weight * entropy(posterior + 1e-10) # Using weight instead of prob_answer
                 
         return current_entropy - expected_entropy
 
@@ -107,47 +91,37 @@ class QuestionSelector:
         
     def select_next_question(self, probabilities, asked_features):
         """
-        Chooses the next question by finding a feature that maximizes information gain.
-        Adds randomness for a better user experience on the first few questions.
-        
-        Args:
-            probabilities (np.ndarray): The current probability distribution.
-            asked_features (set): A set of features that have already been asked.
-            
-        Returns:
-            tuple or None: (feature_name, question_text) for the best question, or None if no questions are left.
+        Chooses the next question. The first question is random, and all subsequent
+        questions are chosen to maximize information gain.
         """
         available_indices = [i for i, f in enumerate(self.feature_cols) if f not in asked_features]
         
         if not available_indices:
             return None
             
-        # Calculate information gain for all available questions
-        gains = []
-        for idx in available_indices:
-            likelihood_func = lambda val: self.processor.compute_likelihood(idx, val)
-            gain = self.engine.compute_info_gain(probabilities, likelihood_func)
-            gains.append((gain, idx))
-            
-        # Sort questions by gain in descending order
-        gains.sort(key=lambda x: x[0], reverse=True)
-        
-        # --- Smart Randomness Logic ---
-        # If it's early in the game, pick randomly from the top 3 best questions.
-        # This adds variety without asking a "bad" question.
-        # As the game progresses (e.g., after 5 questions), it becomes strictly optimal.
-        if len(asked_features) < 5:
-            top_k = gains[:3] # Get the top 3 questions
-            if not top_k: return None # Safety check
-            
-            # Choose one of the best questions randomly
-            best_gain, best_feature_idx = random.choice(top_k)
+        # --- Smart Question Selection Logic ---
+        # If it's the first question of the game, pick a random one to start.
+        if len(asked_features) == 0:
+            best_feature_idx = random.choice(available_indices)
         else:
-            # After a few questions, always pick the absolute best one
-            best_gain, best_feature_idx = gains[0]
+            # From the second question onwards, be strictly optimal (greedy).
+            gains = []
+            for idx in available_indices:
+                likelihood_func = lambda val: self.processor.compute_likelihood(idx, val)
+                gain = self.engine.compute_info_gain(probabilities, likelihood_func)
+                gains.append((gain, idx))
+            
+            # Sort by gain to find the most informative question.
+            gains.sort(key=lambda x: x[0], reverse=True)
+            
+            if not gains:
+                return None
+            
+            # Pick the question with the highest gain.
+            _, best_feature_idx = gains[0]
 
         feature = self.feature_cols[best_feature_idx]
-        question = self.questions_map.get(feature, f"Is it known for having {feature.replace('_', ' ')}?")
+        question = self.questions_map.get(feature, f"Does it have the characteristic: {feature.replace('_', ' ')}?")
         
         return feature, question
 
@@ -156,20 +130,21 @@ class AkinatorService:
     """Manages the overall game logic, state, and data persistence."""
     def __init__(self, csv_path='animalfulldata.csv', questions_path='questions.json'):
         self.csv_path = csv_path
+        self.questions_path = questions_path
+        
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"Database file not found: {csv_path}")
+            
         self.df = pd.read_csv(csv_path)
         self.feature_cols = [c for c in self.df.columns if c != 'animal_name']
-        self.animals = self.df['animal_name'].values
         
-        # Load custom questions from JSON
         self.questions_map = {}
         if os.path.exists(questions_path):
             with open(questions_path, 'r') as f:
                 self.questions_map = json.load(f)
                 
-        # Initialize core components
         self._initialize_modules()
         
-        # Map user-friendly answers to numerical values
         self.fuzzy_map = {
             'yes': 1.0, 'y': 1.0, 'probably': 0.75,
             'maybe': 0.5, 'idk': 0.5, '?': 0.5,
@@ -178,7 +153,11 @@ class AkinatorService:
         print("✅ Akinator brain initialized successfully.")
         
     def _initialize_modules(self):
-        """Helper to initialize or re-initialize processing modules when data changes."""
+        """Helper to re-initialize all modules when the underlying data changes."""
+        self.animals = self.df['animal_name'].values
+        # Store a lowercase version for fast, case-insensitive lookups
+        self.lower_case_animals = self.df['animal_name'].str.lower().values
+        
         feature_matrix = self.df[self.feature_cols].values
         self.processor = FeatureProcessor(feature_matrix)
         self.bayesian = BayesianEngine(len(self.animals))
@@ -187,38 +166,75 @@ class AkinatorService:
         )
 
     def create_initial_state(self):
-        """Returns the initial state for a new game."""
+        """Returns the initial state dictionary for a new game."""
         return {
             'probabilities': self.bayesian.get_uniform_prior().tolist(),
-            'answered_features': {}, # Stores feature:fuzzy_value
-            'asked_features': set()  # Stores feature names
+            'answered_features': {}, # Stores {feature: fuzzy_value}
+            'asked_features': []      # Stores [feature_name]
         }
 
-    def update_beliefs(self, probabilities, feature, fuzzy_value):
-        """Update animal probabilities based on a new answer."""
+    def get_next_question(self, game_state):
+        """Public method to get the next question based on the current game state."""
+        # Convert state from lists (JSON) back to numpy arrays for computation
+        probabilities = np.array(game_state['probabilities'])
+        asked_features = set(game_state['asked_features'])
+        return self.question_selector.select_next_question(probabilities, asked_features)
+
+    def process_answer(self, game_state, feature, user_answer):
+        """Public method to process a user's answer and update the game state."""
+        fuzzy_value = self.fuzzy_map[user_answer.lower().strip()]
+        
+        # Update state history
+        game_state['asked_features'].append(feature)
+        game_state['answered_features'][feature] = fuzzy_value
+        
+        # Update beliefs
+        probabilities = np.array(game_state['probabilities'])
         feature_idx = self.feature_cols.index(feature)
         likelihood = self.processor.compute_likelihood(feature_idx, fuzzy_value)
-        return self.bayesian.bayesian_update(probabilities, likelihood)
+        new_probabilities = self.bayesian.bayesian_update(probabilities, likelihood)
         
-    def get_top_predictions(self, probabilities, n=5):
-        """Return the top N most likely animals."""
+        game_state['probabilities'] = new_probabilities.tolist()
+        return game_state
+        
+    def get_top_predictions(self, game_state, n=5):
+        """Return the top N most likely animals from the current game state."""
+        probabilities = np.array(game_state['probabilities'])
         top_indices = np.argsort(probabilities)[::-1][:n]
         return [(self.animals[i], float(probabilities[i])) for i in top_indices]
         
-    def learn_new_animal(self, name, feature_values):
-        """Adds a new animal to the dataset and saves it."""
-        if name.lower() in self.df['animal_name'].str.lower().values:
-            print(f"Animal '{name}' already exists. Skipping.")
-            return
-
-        new_row = {'animal_name': name}
-        # Use provided answers, defaulting to 0.5 (unknown) for unasked questions
-        new_row.update({f: feature_values.get(f, 0.5) for f in self.feature_cols})
+    def learn_new_animal(self, name, answered_features):
+        """
+        Adds a new animal or updates an existing one in the dataset.
+        Handles case-insensitivity and prevents duplicates.
+        """
+        clean_name = name.strip()
         
-        self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
+        # --- UPDATE OR ADD LOGIC ---
+        if clean_name.lower() in self.lower_case_animals:
+            # UPDATE EXISTING ANIMAL
+            # Find the exact index of the animal to update
+            animal_index = self.df[self.df['animal_name'].str.lower() == clean_name.lower()].index[0]
+            
+            # Update only the features that were answered in this game
+            for feature, value in answered_features.items():
+                self.df.loc[animal_index, feature] = value
+            print(f"🧠 Updated existing animal: {self.df.loc[animal_index, 'animal_name']}")
+
+        else:
+            # ADD NEW ANIMAL
+            # Capitalize for consistency
+            new_name = clean_name.capitalize()
+            new_row = {'animal_name': new_name}
+            # Use provided answers, defaulting to 0.5 (unknown) for unasked questions
+            new_row.update({f: answered_features.get(f, 0.5) for f in self.feature_cols})
+            
+            self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
+            print(f"🧠 Learned new animal: {new_name}")
+
+        # --- SAVE AND RE-INITIALIZE ---
+        # Save the updated dataframe back to the CSV
         self.df.to_csv(self.csv_path, index=False)
         
-        # Re-initialize modules with the new data
+        # Re-initialize all modules with the new data so changes take effect immediately
         self._initialize_modules()
-        self.animals = self.df['animal_name'].values
-        print(f"🧠 Learned new animal: {name}")

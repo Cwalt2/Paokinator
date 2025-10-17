@@ -29,15 +29,12 @@ def get_question(game_id):
     
     game_state = games[game_id]
     
-    # The brain's question selector expects a NumPy array and a set
-    probabilities = np.array(game_state['probabilities'])
-    asked_features = game_state['asked_features']
-    
-    result = service.question_selector.select_next_question(probabilities, asked_features)
+    # Use the service's public method to get the next question
+    result = service.get_next_question(game_state)
     
     if not result:
         # No more questions to ask, return final predictions
-        final_predictions = service.get_top_predictions(probabilities)
+        final_predictions = service.get_top_predictions(game_state)
         return jsonify({'status': 'NO_MORE_QUESTIONS', 'predictions': final_predictions})
     
     feature, question = result
@@ -51,26 +48,20 @@ def answer(game_id):
         
     data = request.json
     feature = data.get('feature')
-    user_answer = data.get('answer', '').lower()
+    user_answer = data.get('answer', '')
     
-    if user_answer not in service.fuzzy_map:
+    if user_answer.lower().strip() not in service.fuzzy_map:
         return jsonify({'error': f"Invalid answer. Please use one of: {list(service.fuzzy_map.keys())}"}), 400
 
     game_state = games[game_id]
-    fuzzy_value = service.fuzzy_map[user_answer]
     
-    # Store the answer and mark the question as asked
-    game_state['answered_features'][feature] = fuzzy_value
-    game_state['asked_features'].add(feature)
-    
-    # Update probabilities using the brain's logic
-    current_probs_np = np.array(game_state['probabilities'])
-    new_probs_np = service.update_beliefs(current_probs_np, feature, fuzzy_value)
+    # Use the service's process_answer method to handle all state updates
+    updated_game_state = service.process_answer(game_state, feature, user_answer)
     
     # Save the updated state
-    game_state['probabilities'] = new_probs_np.tolist()
+    games[game_id] = updated_game_state
     
-    predictions = service.get_top_predictions(new_probs_np)
+    predictions = service.get_top_predictions(updated_game_state)
     return jsonify({'predictions': predictions})
 
 @app.route('/game/<game_id>/learn', methods=['POST'])
