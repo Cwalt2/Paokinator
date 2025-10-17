@@ -1,192 +1,236 @@
-# app.py - Lightweight Bayesian Akinator
+# app.py - Modular Bayesian Akinator
 import pandas as pd
 import numpy as np
 import torch
-import torch.nn as nn
 from scipy.stats import entropy
-import warnings
-import os
-import json
-import uuid
 from flask import Flask, request, jsonify
+import json
+import os
+import uuid
 
-warnings.filterwarnings('ignore')
+# --- Feature Processing Module ---
+class FeatureProcessor:
+    """Handles feature normalization and similarity computation using PyTorch."""
+    def __init__(self, feature_matrix):
+        self.device = torch.device('cpu')
+        self.features = torch.FloatTensor(feature_matrix).to(self.device)
+        self.normalized = self._normalize(self.features)
+    
+    def _normalize(self, x):
+        """Normalize features to [-1, 1] range for better similarity computation."""
+        mean = x.mean(dim=0, keepdim=True)
+        std = x.std(dim=0, keepdim=True) + 1e-8
+        return torch.tanh((x - mean) / std)
+    
+    def compute_similarity(self, feature_idx, target_value):
+        """Compute vectorized similarity scores for a feature across all animals."""
+        feature_vals = self.features[:, feature_idx]
+        distances = torch.abs(target_value - feature_vals)
+        # Adaptive uncertainty based on confidence
+        uncertainty = 2.0 if abs(target_value - 0.5) > 0.3 else 1.5
+        similarities = torch.exp(-uncertainty * distances)
+        return similarities.numpy()
 
-# --- Lightweight PyTorch Utility (used, but not trained) ---
-class TorchFeatureProcessor(nn.Module):
-    """Simple non-trainable module that normalizes features using PyTorch ops."""
-    def __init__(self, input_dim):
-        super().__init__()
-        self.scale = torch.nn.Parameter(torch.ones(input_dim), requires_grad=False)
-        self.bias = torch.nn.Parameter(torch.zeros(input_dim), requires_grad=False)
+# --- Bayesian Engine Module ---
+class BayesianEngine:
+    """Core probabilistic reasoning engine."""
+    def __init__(self, n_animals):
+        self.n_animals = n_animals
+    
+    def get_uniform_prior(self):
+        """Initialize with uniform probability distribution."""
+        return np.ones(self.n_animals) / self.n_animals
+    
+    def bayesian_update(self, prior, likelihood):
+        """Apply Bayes' rule: P(A|E) ∝ P(E|A) * P(A)."""
+        posterior = prior * likelihood
+        return posterior / (posterior.sum() + 1e-10)
+    
+    def compute_info_gain(self, prior, feature_likelihoods):
+        """Calculate expected information gain for a feature."""
+        current_entropy = entropy(prior + 1e-10)
+        expected_entropy = 0
+        
+        # Sample key fuzzy values
+        for fuzzy_val, weight in [(1.0, 0.4), (0.5, 0.2), (0.0, 0.4)]:
+            likelihoods = feature_likelihoods(fuzzy_val)
+            p_answer = np.dot(prior, likelihoods)
+            
+            if p_answer > 1e-10:
+                posterior = self.bayesian_update(prior, likelihoods)
+                expected_entropy += weight * entropy(posterior + 1e-10)
+        
+        return current_entropy - expected_entropy
 
-    def forward(self, x):
-        # Use PyTorch operations to normalize or transform feature tensors
-        x_centered = x - x.mean(dim=0, keepdim=True)
-        x_scaled = x_centered / (x.std(dim=0, keepdim=True) + 1e-6)
-        return torch.tanh(x_scaled)  # bounded features (-1, 1)
+# --- Question Selection Module ---
+class QuestionSelector:
+    """Intelligently selects the most informative questions."""
+    def __init__(self, feature_cols, questions_map, processor, bayesian_engine):
+        self.feature_cols = feature_cols
+        self.questions_map = questions_map
+        self.processor = processor
+        self.engine = bayesian_engine
+    
+    def select_next_question(self, probabilities, asked_questions):
+        """Choose feature that maximizes information gain."""
+        available = [i for i, f in enumerate(self.feature_cols) 
+                    if f not in asked_questions]
+        
+        if not available:
+            return None
+        
+        best_idx, max_gain = None, -np.inf
+        
+        for idx in available:
+            gain = self.engine.compute_info_gain(
+                probabilities,
+                lambda val: self.processor.compute_similarity(idx, val)
+            )
+            if gain > max_gain:
+                max_gain, best_idx = gain, idx
+        
+        feature = self.feature_cols[best_idx]
+        question = self.questions_map.get(
+            feature, 
+            feature.replace('_', ' ').capitalize() + '?'
+        )
+        return feature, question
 
-# --- Core Game Logic ---
-class PaokinatorService:
-    """A purely Bayesian Akinator-like animal guesser using PyTorch for feature processing."""
+# --- Main Service ---
+class AkinatorService:
+    """Unified service handling game logic."""
     def __init__(self, csv_path='animalfulldata.csv', questions_path='questions.json'):
-        self.csv_path = csv_path
-        self.questions_path = questions_path
         self.df = pd.read_csv(csv_path)
         self.feature_cols = [c for c in self.df.columns if c != 'animal_name']
         self.animals = self.df['animal_name'].values
-
+        
+        # Load questions
+        self.questions_map = {}
         if os.path.exists(questions_path):
             with open(questions_path, 'r') as f:
                 self.questions_map = json.load(f)
-        else:
-            self.questions_map = {}
-
+        
+        # Initialize modules
+        feature_matrix = self.df[self.feature_cols].values
+        self.processor = FeatureProcessor(feature_matrix)
+        self.bayesian = BayesianEngine(len(self.animals))
+        self.question_selector = QuestionSelector(
+            self.feature_cols, self.questions_map, 
+            self.processor, self.bayesian
+        )
+        
+        # Fuzzy answer mapping
         self.fuzzy_map = {
             'yes': 1.0, 'y': 1.0, 'probably': 0.75, 'prob': 0.75,
             'maybe': 0.5, 'idk': 0.5, '?': 0.5,
             'probably not': 0.25, 'prob not': 0.25, 'no': 0.0, 'n': 0.0
         }
-
-        self.device = torch.device('cpu')
-        features = torch.FloatTensor(self.df[self.feature_cols].values).to(self.device)
-        self.torch_processor = TorchFeatureProcessor(input_dim=len(self.feature_cols)).to(self.device)
-        self.feature_tensor = self.torch_processor(features)  # processed but not trained
-
-        print("✓ Paokinator Bayesian engine initialized (no training needed).")
-
-    # --- Bayesian Mechanics ---
-    def get_initial_probabilities(self):
-        """Equal starting probabilities for all animals."""
-        return np.ones(len(self.animals)) / len(self.animals)
-
-    def update_probabilities(self, probabilities, feature, fuzzy_value):
-        """Bayesian update rule for animal probabilities."""
-        animal_values = self.df[feature].values
-        uncertainty = 3.5 if fuzzy_value != 0.5 else 2.0
-        distances = np.abs(fuzzy_value - animal_values)
-        likelihoods = np.exp(-uncertainty * distances)
-        probabilities *= likelihoods
-        probabilities /= probabilities.sum()
-        return probabilities
-
-    def get_predictions(self, probabilities, n=5):
-        """Return the top N animal guesses."""
-        top_indices = np.argsort(probabilities)[::-1][:n]
-        return [(self.animals[i], float(probabilities[i])) for i in top_indices]
-
-    def get_best_question(self, probabilities, asked_questions):
-        """Choose the most informative next question using expected entropy."""
-        available_features = [f for f in self.feature_cols if f not in asked_questions]
-        if not available_features: return None
-
-        current_entropy = entropy(probabilities + 1e-10)
-        best_feature, best_gain = None, -1
-
-        for feature in available_features:
-            expected_entropy = 0
-            for fuzzy_val in [1.0, 0.5, 0.0]:
-                animal_values = self.df[feature].values
-                distances = np.abs(fuzzy_val - animal_values)
-                likelihoods = np.exp(-3.5 * distances)
-                p_answer = np.dot(probabilities, likelihoods)
-                if p_answer > 1e-10:
-                    temp_probs = probabilities * likelihoods
-                    temp_probs /= temp_probs.sum()
-                    expected_entropy += p_answer * entropy(temp_probs + 1e-10)
-
-            gain = current_entropy - expected_entropy
-            if gain > best_gain:
-                best_gain, best_feature = gain, feature
-
-        return best_feature
-
-    def add_new_animal(self, animal_name, answered_features):
-        """Add new animal and save to CSV (no retraining needed)."""
-        print(f"Adding new animal: {animal_name}")
-        new_row = {'animal_name': animal_name}
-        new_row.update({feat: answered_features.get(feat, 0.5) for feat in self.feature_cols})
+        
+        self.csv_path = csv_path
+        print("✓ Akinator initialized successfully")
+    
+    def update_beliefs(self, probabilities, feature, fuzzy_value):
+        """Update animal probabilities based on answer."""
+        feature_idx = self.feature_cols.index(feature)
+        similarities = self.processor.compute_similarity(feature_idx, fuzzy_value)
+        return self.bayesian.bayesian_update(probabilities, similarities)
+    
+    def get_top_predictions(self, probabilities, n=5):
+        """Return top N predictions with confidence scores."""
+        top_idx = np.argsort(probabilities)[::-1][:n]
+        return [(self.animals[i], float(probabilities[i])) for i in top_idx]
+    
+    def learn_new_animal(self, name, feature_values):
+        """Add new animal to knowledge base."""
+        new_row = {'animal_name': name}
+        new_row.update({f: feature_values.get(f, 0.5) for f in self.feature_cols})
+        
         self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
         self.df.to_csv(self.csv_path, index=False)
+        
+        # Reinitialize processor with new data
+        feature_matrix = self.df[self.feature_cols].values
+        self.processor = FeatureProcessor(feature_matrix)
         self.animals = self.df['animal_name'].values
-        print(f"✓ Saved {animal_name} to dataset.")
+        self.bayesian = BayesianEngine(len(self.animals))
+        
+        print(f"✓ Learned: {name}")
 
-
-# --- Flask Setup ---
+# --- Flask API ---
 app = Flask(__name__)
-paokinator_service = PaokinatorService()
-active_games = {}
+service = AkinatorService()
+games = {}
 
 @app.route('/game/start', methods=['POST'])
 def start_game():
-    game_id = str(uuid.uuid4())
-    probs = paokinator_service.get_initial_probabilities()
-    active_games[game_id] = {
-        'probabilities': probs.tolist(),
-        'answered_features': {},
-        'asked_questions': set()
+    gid = str(uuid.uuid4())
+    games[gid] = {
+        'probs': service.bayesian.get_uniform_prior().tolist(),
+        'features': {},
+        'asked': set()
     }
-    return jsonify({'game_id': game_id})
+    return jsonify({'game_id': gid})
 
-@app.route('/game/<game_id>/question', methods=['GET'])
-def get_question(game_id):
-    game = active_games.get(game_id)
-    if not game: return jsonify({'error': 'Game not found'}), 404
-
-    probs = np.array(game['probabilities'])
-    asked = game['asked_questions']
-    feature = paokinator_service.get_best_question(probs, asked)
-    if not feature:
+@app.route('/game/<gid>/question', methods=['GET'])
+def get_question(gid):
+    if gid not in games:
+        return jsonify({'error': 'Game not found'}), 404
+    
+    g = games[gid]
+    result = service.question_selector.select_next_question(
+        np.array(g['probs']), g['asked']
+    )
+    
+    if not result:
         return jsonify({'status': 'NO_MORE_QUESTIONS'})
-    question = paokinator_service.questions_map.get(feature, feature.replace('_', ' ').capitalize() + '?')
+    
+    feature, question = result
     return jsonify({'feature': feature, 'question': question})
 
-@app.route('/game/<game_id>/answer', methods=['POST'])
-def post_answer(game_id):
-    game = active_games.get(game_id)
-    if not game: return jsonify({'error': 'Game not found'}), 404
-
+@app.route('/game/<gid>/answer', methods=['POST'])
+def answer(gid):
+    if gid not in games:
+        return jsonify({'error': 'Game not found'}), 404
+    
     data = request.json
-    feature = data['feature']
-    user_answer = data.get('answer', '').lower()
-
-    if user_answer not in paokinator_service.fuzzy_map:
+    feat = data['feature']
+    ans = data.get('answer', '').lower()
+    
+    if ans not in service.fuzzy_map:
         return jsonify({'error': 'Invalid answer'}), 400
-
-    fuzzy_val = paokinator_service.fuzzy_map[user_answer]
-    game['answered_features'][feature] = fuzzy_val
-    game['asked_questions'].add(feature)
-
-    probs = np.array(game['probabilities'])
-    updated = paokinator_service.update_probabilities(probs, feature, fuzzy_val)
-    game['probabilities'] = updated.tolist()
-
-    preds = paokinator_service.get_predictions(updated)
+    
+    g = games[gid]
+    fuzzy_val = service.fuzzy_map[ans]
+    g['features'][feat] = fuzzy_val
+    g['asked'].add(feat)
+    
+    probs = service.update_beliefs(np.array(g['probs']), feat, fuzzy_val)
+    g['probs'] = probs.tolist()
+    
+    preds = service.get_top_predictions(probs)
     return jsonify({'predictions': preds})
 
-@app.route('/game/<game_id>/learn', methods=['POST'])
-def learn_animal(game_id):
-    data = request.json
-    animal_name = data.get('correct_animal')
-    if not animal_name:
-        return jsonify({'error': 'Animal name missing'}), 400
-
-    game = active_games.get(game_id)
-    if not game:
+@app.route('/game/<gid>/learn', methods=['POST'])
+def learn(gid):
+    if gid not in games:
         return jsonify({'error': 'Game not found'}), 404
+    
+    name = request.json.get('correct_animal')
+    if not name:
+        return jsonify({'error': 'Animal name required'}), 400
+    
+    service.learn_new_animal(name, games[gid]['features'])
+    return jsonify({'message': f'Learned about {name}!'})
 
-    paokinator_service.add_new_animal(animal_name, game['answered_features'])
-    return jsonify({'message': f'Thank you! I learned about {animal_name}.'})
-
-@app.route('/game/<game_id>/end', methods=['DELETE'])
-def end_game(game_id):
-    if game_id in active_games:
-        del active_games[game_id]
-        return jsonify({'message': 'Game ended successfully.'})
+@app.route('/game/<gid>/end', methods=['DELETE'])
+def end_game(gid):
+    if gid in games:
+        del games[gid]
+        return jsonify({'message': 'Game ended'})
     return jsonify({'error': 'Game not found'}), 404
 
 if __name__ == '__main__':
     if not os.path.exists('animalfulldata.csv'):
-        print("Error: 'animalfulldata.csv' not found.")
+        print("Error: 'animalfulldata.csv' not found")
     else:
         app.run(host='0.0.0.0', port=5000, debug=True)
