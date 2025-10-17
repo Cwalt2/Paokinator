@@ -1,0 +1,20 @@
+<h1>My Final Guess Is...</h1>
+<h2><%= @final_guess.capitalize %>!</h2>
+
+<p>Am I correct?</p>
+
+<%# Form for "Yes" %>
+<%= form_with url: game_end_path, method: :post do |form| %>
+    <%= form.hidden_field :correct, value: 'yes' %>
+    <%= form.submit "Yes, you got it!" %>
+<% end %>
+
+<hr>
+
+<%# Form for "No" %>
+<p>Darn! In that case, what was it?</p>
+<%= form_with url: game_end_path, method: :post do |form| %>
+    <%= form.hidden_field :correct, value: 'no' %>
+    <%= form.text_field :correct_animal, placeholder: "e.g., Cat" %>
+    <%= form.submit "Teach Me" %>
+<% end %>

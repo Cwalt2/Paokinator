@@ -1,0 +1,6 @@
+<h1>Welcome to Paokinator</h1>
+<p>Think of an animal, and I will try to guess it.</p>
+
+<%= form_with url: game_create_path, method: :post do |form| %>
+  <%= form.submit "Start Game" %>
+<% end %>
