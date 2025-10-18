@@ -20,19 +20,13 @@ class FeatureProcessor:
         """
         feature_vector = self.features[:, feature_idx]
 
-        # --- PyTorch Integration Block ---
-        # Using PyTorch for the absolute difference calculation.
-        # This demonstrates tensor usage without adding significant overhead,
-        # as the result is immediately converted back to a NumPy array.
+       # Using PyTorch for the absolute difference calculation.
         try:
-            # Convert NumPy array and scalar to PyTorch tensors
             feature_tensor = torch.from_numpy(feature_vector)
             target_tensor = torch.tensor(target_value, dtype=torch.float32)
 
-            # Perform the distance calculation using PyTorch
             distances_tensor = torch.abs(target_tensor - feature_tensor)
             
-            # Convert the result back to a NumPy array to work with the rest of the code
             distances = distances_tensor.numpy()
         except (ImportError, ModuleNotFoundError):
             # Fallback to NumPy if PyTorch is not available
@@ -261,32 +255,44 @@ class AkinatorService:
         return game_state
 
     def should_make_guess(self, game_state):
-        """Improved two-stage guessing strategy."""
+        """
+        Guessing strategy based on new requirements:
+        - One middle guess if prob > 95%.
+        - Final guess if prob > 98%.
+        - Forced final guess if 22 questions are reached.
+        """
         probabilities = np.array(game_state['probabilities'])
-        max_prob = probabilities.max()
         num_questions = len(game_state['asked_features'])
         middle_guess_made = game_state.get('middle_guess_made', False)
         
-        sorted_probs = np.sort(probabilities)[::-1]
-        prob_gap = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) >= 2 else max_prob
-        top_idx = probabilities.argmax()
-        animal_name = self.animals[top_idx]
+        # Find the top *non-rejected* animal and its probability
+        top_indices = np.argsort(probabilities)[::-1]
+        animal_name = None
+        max_prob = 0.0
         
-        if animal_name in game_state.get('rejected_animals', []):
-            for idx in np.argsort(probabilities)[::-1]:
-                candidate = self.animals[idx]
-                if candidate not in game_state.get('rejected_animals', []):
-                    animal_name = candidate
-                    break
+        for idx in top_indices:
+            candidate = self.animals[idx]
+            if candidate not in game_state.get('rejected_animals', []):
+                animal_name = candidate
+                max_prob = probabilities[idx]
+                break
+        
+        if animal_name is None:
+            return False, None, None
 
-        if not middle_guess_made and 15 <= num_questions <= 17:
-            if max_prob >= 0.90 and prob_gap >= 0.40:
-                game_state['middle_guess_made'] = True
-                return True, animal_name, "middle"
-        
-        if num_questions >= 22 or (num_questions >= 15 and max_prob >= 0.97 and prob_gap >= 0.60):
+        if max_prob > 0.98:
             game_state['final_guess_mode'] = True
             return True, animal_name, "final"
+
+
+        if not middle_guess_made and max_prob > 0.95:
+            game_state['middle_guess_made'] = True
+            return True, animal_name, "middle"
+
+        if num_questions >= 22:
+            game_state['final_guess_mode'] = True
+            return True, animal_name, "final"
+        
 
         return False, None, None
 
