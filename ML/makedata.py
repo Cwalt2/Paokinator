@@ -18,113 +18,120 @@ API_KEY = os.getenv("OPENROUTER_API_KEY")
 VALID_CLASSES = ["Mammal", "Bird", "Reptile", "Fish", "Amphibian", "Insect", "Arachnid", "Crustacean", "Mollusc"]
 VALID_SIZES = ["Tiny", "Small", "Medium", "Large", "Very Large", "Massive"]
 
-# ---------- HIGH-QUALITY DISCRIMINATIVE FEATURES ----------
-# Organized from fundamental biology to specific behaviors for clarity.
+
 BASE_FIELDS = [
-    # --- Fundamental Biology & Physiology ---
-    "is_vertebrate",                  # Has a backbone/internal skeleton (mammals, birds, fish, etc.)
-    "is_invertebrate",                # Lacks a backbone (insects, molluscs, etc.)
-    "is_warm_blooded",                # Endothermic: maintains constant internal body temperature
-    "is_cold_blooded",                # Ectothermic: body temperature relies on the environment
-    "has_gills_for_breathing",        # Breathes water using gills (at least in some life stages)
-    "has_lungs_for_breathing",        # Breathes air using lungs
-    "hibernates_or_enters_torpor",    # Undergoes a state of inactivity for winter/cold periods
-    "is_bioluminescent",              # Can produce its own light (e.g., firefly, anglerfish)
+    # --- 1. Foundational Classifiers ---
+    # Broadest questions to slice the animal kingdom into major groups.
+    "is_vertebrate",                      # Has a backbone (mammals, birds, fish, reptiles, amphibians).
+    "is_warm_blooded",                    # Endothermic: maintains its own body temperature (mammals, birds).
+    "is_aquatic",                         # Lives exclusively in water.
+    "is_terrestrial",                     # Lives exclusively on land.
+    "has_lungs_for_breathing",            # Breathes air with lungs.
+    "has_gills_for_breathing",            # Breathes water with gills (at some life stage).
 
-    # --- External Covering & Morphology ---
-    "has_fur_or_hair",                # Covered in fur or hair
-    "has_feathers",                   # Has feathers
-    "has_scales",                     # Has scales (e.g., fish, reptiles)
-    "has_leathery_or_slimy_skin",     # Skin is leathery, smooth, or slimy (e.g., amphibians, worms)
-    "has_hard_exoskeleton",           # Has a chitinous external skeleton (e.g., insects, crustaceans)
-    "has_shell",                      # Has a hard external shell (e.g., turtle, snail)
-    "has_wings",                      # Has wings (for flying or gliding)
-    "has_fins",                       # Has fins for swimming
-    "has_claws_paws_or_talons",       # Has claws, paws, or talons
-    "has_hooves",                     # Has hooves
-    "has_horns_or_antlers",           # Has horns, antlers, or similar protrusions
-    "has_distinct_beak_or_bill",      # Has a beak/bill instead of a mouth with teeth (birds, turtles)
-    "has_tusks",                      # Has tusks
-    "has_tentacles_or_arms",          # Tentacles or arm-like appendages (octopus, squid)
-    "has_prehensile_tail",            # Tail is capable of grasping
+    # --- 2. External Covering & Morphology ---
+    # "What does it look like?" - Key physical identifiers.
+    "has_fur_or_hair",                    # Defining feature of mammals.
+    "has_feathers",                       # Defining feature of birds.
+    "has_scales",                         # Common in fish and reptiles.
+    "has_leathery_or_slimy_skin",         # Common in amphibians and worms.
+    "has_hard_exoskeleton",               # Defining feature of insects, arachnids, crustaceans.
+    "has_shell",                          # Has a hard external shell (e.g., turtle, snail, clam).
 
-    # --- Anatomy & Body Plan ---
-    "has_no_legs",                    # Legless
-    "has_two_legs",                   # Bipedal
-    "has_four_legs",                  # Quadrupedal
-    "has_six_legs",                   # A key identifier for insects
-    "has_eight_legs",                 # A key identifier for arachnids
-    "has_more_than_eight_legs",       # For myriapods, crustaceans etc.
-    "has_compound_eyes",              # Eyes made of many individual units (common in arthropods)
-    "has_segmented_body",             # Body is clearly divided into segments (e.g., insects, worms)
-    "long_and_slender_body",          # Long, snake-like or elongated body
-    "compact_and_stout_body",         # Compact, rounded, or heavily-built body
-    "radially_symmetrical_body",      # Body parts arranged around a central axis (e.g., starfish, jellyfish)
+    # --- 3. Primary Coloration ---
+    # "What color is it?" - A simple but powerful visual discriminator.
+    "is_primarily_black",                 # Major color is black (e.g., crow, panther).
+    "is_primarily_white",                 # Major color is white (e.g., polar bear, swan).
+    "is_primarily_brown",                 # Major color is brown (e.g., brown bear, deer).
+    "is_primarily_grey",                  # Major color is grey (e.g., elephant, rhino, dolphin).
+    "is_primarily_red_or_pink",           # Major color is red or pink (e.g., cardinal, flamingo).
+    "is_primarily_orange",                # Major color is orange (e.g., tiger, clownfish).
+    "is_primarily_yellow",                # Major color is yellow (e.g., canary, giraffe).
+    "is_primarily_green",                 # Major color is green (e.g., frog, iguana, parrot).
+    "is_primarily_blue",                  # Major color is blue (e.g., blue jay, blue morpho butterfly).
+    "can_have_multi_color",                   # Human beings for example
 
-    # --- Locomotion ---
-    "primarily_walks_or_runs",        # Uses legs to walk/run on land
-    "primarily_climbs",               # Regularly climbs trees, rocks, or other vertical surfaces
-    "primarily_swims",                # Primarily moves by swimming
-    "primarily_flies_or_glides",      # Primarily moves by flying or gliding
-    "primarily_burrows_or_digs",      # Lives in burrows or digs as a primary mode of movement
-    "is_sessile_as_adult",            # Is immobile and fixed in one place as an adult (e.g., barnacles, corals)
-    "moves_by_jumping_or_leaping",    # Primary mode of locomotion is jumping/leaping
+    # --- 4. Anatomy & Body Plan ---
+    # Specific body parts and structure.
+    "has_wings",                          # Has wings (whether for flying or not).
+    "has_fins",                           # Has fins for swimming.
+    "has_hooves",                         # Has hooves instead of paws or claws.
+    "has_claws_paws_or_talons",           # Has claws, paws, or talons for gripping, digging, or hunting.
+    "has_horns_or_antlers",               # Possesses horns or antlers.
+    "has_tusks",                          # Has tusks (e.g., elephant, walrus).
+    "has_distinct_beak_or_bill",          # Has a beak/bill instead of a mouth with teeth.
+    "has_tentacles_or_arms",              # Has tentacles or arm-like appendages (e.g., octopus, squid).
+    "has_prehensile_tail",                # Tail is capable of grasping.
+    "has_no_legs",                        # Is legless.
+    "has_two_legs",                       # Is bipedal.
+    "has_four_legs",                      # Is quadrupedal.
+    "has_six_legs",                       # Key identifier for insects.
+    "has_eight_legs",                     # Key identifier for arachnids.
+    "has_more_than_eight_legs",           # For myriapods, crustaceans, etc.
+    "long_and_slender_body",              # Body shape is snake-like or weasel-like.
+    "radially_symmetrical_body",          # Body parts arranged around a central axis (e.g., starfish, jellyfish).
 
-    # --- Habitat ---
-    "is_terrestrial",                 # Lives exclusively on land
-    "is_aquatic",                     # Lives exclusively in water
-    "is_semi_aquatic",                # Lives both on land and in water (e.g., frog, beaver)
-    "is_arboreal",                    # Lives primarily in trees
-    "is_fossorial",                   # Adapted to digging and lives underground
-    "lives_in_freshwater",            # Mostly found in freshwater (rivers, lakes)
-    "lives_in_marine_water",          # Mostly found in saltwater (oceans, seas)
-    "lives_in_polar_regions",         # Native to polar/arctic climates
-    "lives_in_forests_or_woodlands",  # Often found in forested areas
-    "lives_in_grasslands_or_savannas",# Often found in grasslands or savanna
-    "lives_in_deserts_or_arid_regions",# Often found in arid or desert regions
-    "common_in_urban_areas",          # Thrives in or near human cities and suburbs
+    # --- 5. Habitat & Global Distribution ---
+    # "Where in the world does it live?"
+    "is_semi_aquatic",                    # Lives both on land and in water (e.g., frog, beaver).
+    "is_arboreal",                        # Lives primarily in trees (e.g., monkey, koala).
+    "is_fossorial",                       # Adapted to digging and lives primarily underground (e.g., mole).
+    "lives_in_marine_water",              # Lives in saltwater oceans.
+    "lives_in_freshwater",                # Lives in freshwater rivers and lakes.
+    "lives_in_polar_or_arctic_regions",   # Native to cold, polar climates.
+    "lives_in_deserts_or_arid_regions",   # Adapted to dry environments.
+    "lives_in_forests_or_woodlands",      # Commonly found in forests.
+    "lives_in_grasslands_or_savannas",    # Commonly found in open plains.
+    "common_in_urban_areas",              # Thrives in or near human cities.
 
-    # --- Diet & Feeding Strategy ---
-    "is_carnivore",                   # Primarily eats meat
-    "is_herbivore",                   # Primarily eats plants
-    "is_omnivore",                    # Eats both plants and animals
-    "is_insectivore",                 # Primarily eats insects
-    "is_piscivore",                   # Primarily eats fish
-    "is_filter_feeder",               # Feeds by filtering particles from water
-    "is_scavenger",                   # Frequently scavenges carrion
-    "eats_nectar_pollen_or_fruit",    # Feeds on nectar, pollen, or fruit
-    "is_parasitic",                   # Lives on or in a host organism, causing it harm
+    # --- 6. Diet & Feeding Strategy ---
+    # "What and how does it eat?"
+    "is_carnivore",                       # Primarily eats meat.
+    "is_herbivore",                       # Primarily eats plants.
+    "is_omnivore",                        # Eats both plants and meat.
+    "is_piscivore",                       # Specifically eats fish.
+    "is_insectivore",                     # Specifically eats insects.
+    "eats_nectar_pollen_or_fruit",        # Feeds on flowers or fruits.
+    "is_filter_feeder",                   # Feeds by filtering particles from water.
+    "is_scavenger",                       # Primarily eats carrion/dead animals.
+    "is_parasitic",                       # Lives on or in a host.
 
-    # --- Reproduction & Lifecycle ---
-    "lays_eggs",                      # Reproduces by laying eggs (Oviparous)
-    "gives_live_birth",               # Gives live birth to young (Viviparous)
-    "undergoes_metamorphosis",        # Has distinct larval and adult stages (e.g., butterflies, frogs)
-    "provides_extensive_parental_care",# Parents actively raise, feed, and protect young
-    "has_no_parental_care",           # Offspring are independent from birth/hatching
-    "carries_young_in_pouch",         # Marsupial reproduction (e.g., kangaroo)
+    # --- 7. Behavior & Lifestyle ---
+    # "How does it live its life?"
+    "is_nocturnal",                       # Primarily active at night.
+    "is_diurnal",                         # Primarily active during the day.
+    "is_solitary",                        # Spends most of its life alone.
+    "lives_in_small_groups_or_pairs",     # Forms small family units or packs.
+    "is_highly_social_or_eusocial",       # Lives in large, complex societies (e.g., ants, bees).
+    "migrates_seasonally",                # Undertakes long-distance seasonal journeys.
+    "hibernates_or_enters_torpor",        # Enters a state of inactivity during cold periods.
+    "builds_complex_structures",          # Builds nests, dams, hives, webs, etc.
+    "is_bioluminescent",                  # Can produce its own light.
+    "can_change_color",                   # Can actively change skin color (e.g., chameleon, octopus).
+    "uses_camouflage_or_mimicry",         # Blends in or mimics other animals.
+    "has_venom_or_poison",                # Produces toxins.
+    "is_apex_predator",                   # Top of its food chain as an adult.
+    "communicates_with_complex_vocalizations", # Known for its songs, calls, or other complex sounds.
 
-    # --- Social Behavior ---
-    "is_highly_social_or_eusocial",   # Lives in large, complex, cooperative societies (e.g., ants, bees, meerkats)
-    "lives_in_small_groups_or_pairs", # Forms small family units, packs, or monogamous pairs
-    "is_solitary",                    # Usually lives alone except to mate
-    "is_territorial",                 # Actively defends a specific area
+    # --- 8. Reproduction & Lifecycle ---
+    # Differentiates major reproductive strategies.
+    "lays_eggs",                          # Reproduces by laying eggs (oviparous).
+    "gives_live_birth",                   # Gives birth to live young (viviparous).
+    "undergoes_metamorphosis",            # Has distinct larval and adult stages (e.g., butterflies, frogs).
+    "carries_young_in_pouch",             # A defining trait of marsupials.
+    "provides_extensive_parental_care",   # Parents actively raise and protect young.
 
-    # --- Defense & Predation ---
-    "is_apex_predator",               # Top predator in its environment with no natural predators
-    "uses_camouflage_or_mimicry",     # Blends in with the environment or mimics other animals
-    "has_venom_or_poison",            # Produces venom (injected) or poison (ingested/touched)
-    "uses_armor_or_spines_for_defense", # Uses physical armor, shells, or spines for defense
-    "releases_noxious_chemicals",     # Sprays or secretes foul chemicals for defense (e.g., skunk)
-    "relies_on_speed_to_escape",      # Primary defense is to flee quickly
-
-    # --- Human Interaction & Special Traits ---
-    "is_domesticated",                # Has been selectively bred by humans
-    "migrates_seasonally",            # Undertakes long-distance seasonal migration
-    "builds_complex_structures",      # Builds nests, dams, hives, webs, or other structures
-    "uses_tools",                     # Known to use objects as tools
-    "communicates_with_complex_vocalizations", # Uses a wide range of sounds/songs for communication
-    "is_nocturnal",                   # Primarily active at night
-    "is_diurnal",                     # Primarily active during the day
+    # --- 9. Human Interaction & Cultural Significance ---
+    # Powerful, context-based questions that leverage human knowledge.
+    "is_domesticated",                    # Selectively bred and lives with humans (e.g., dog, cow).
+    "is_considered_a_common_pest",        # Widely regarded as a nuisance in homes or agriculture.
+    "causes_diseases",                    # Acts as a vector or direct cause of human diseases (e.g., mosquito, rat).
+    "is_symbol_of_a_nation_or_state",     # An official national animal (e.g., Bald Eagle, Panda).
+    "is_featured_in_religious_texts",     # Prominent in major religious stories (e.g., Serpent, Dove).
+    "is_mythological_or_fictional",       # Primarily exists in myth, legend, or fiction.
+    "is_extinct_or_prehistoric",          # Is no longer living (e.g., Dinosaur, Dodo).
+    "is_major_focus_of_ecotourism",       # A "big ticket" animal people travel to see on safari or tours.
+    "is_famous_pop_culture_character",    # A specific member of the species is a famous character (e.g., Nemo, Simba).
 ]
 # -----------------------------------------------------
 

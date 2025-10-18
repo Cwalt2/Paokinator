@@ -1,4 +1,4 @@
-# client.py - Fixed Client with Proper Rejection Handling and Final Guess Logic
+# client.py - Client with Two-Stage Guessing Support
 import requests
 import sys
 
@@ -31,7 +31,7 @@ def submit_answer(session_id, feature, answer):
     return response.json()
 
 def reject_guess(session_id, animal_name):
-    """CRITICAL: Tell the server this guess is WRONG."""
+    """Tell the server this guess is WRONG."""
     response = requests.post(f"{BASE_URL}/reject/{session_id}", json={
         'animal_name': animal_name
     })
@@ -45,7 +45,7 @@ def submit_final_answer(session_id, animal_name):
     return response.json()
 
 def play_game():
-    """Main game loop with FIXED guessing logic."""
+    """Main game loop with two-stage guessing."""
     session_id = start_game()
     print(f"Started a new game! Session ID: {session_id}")
     print("=" * 50)
@@ -64,23 +64,77 @@ def play_game():
             print(f"Error: {q_data['error']}")
             break
 
-        # This is the high-confidence "Is it an X?" question
+        # Check if it's a guess
         if q_data.get('should_guess', False):
             guess = q_data['guess']
+            guess_type = q_data.get('guess_type', 'final')
             question_count += 1
-            print(f"Q{question_count}: Is it a {guess}?")
-            user_input = input("-> ").strip().lower()
-
-            if user_input in ['yes', 'y']:
-                print(f"🎉 Awesome! I knew it was a {guess}!")
-                return
-            else:
-                reject_guess(session_id, guess)
-                continue
+            
+            if guess_type == 'middle':
+                # SNEAKY MIDDLE GUESS - Format as a question
+                print(f"\nQ{question_count}: Is it a {guess}?")
+                user_input = input("-> ").strip().lower()
+                
+                if user_input in ['yes', 'y']:
+                    print(f"🎉 Awesome! I knew it was a {guess}!")
+                    return
+                else:
+                    # Reject and continue asking questions
+                    reject_guess(session_id, guess)
+                    continue
+                    
+            elif guess_type == 'final':
+                # CONFIDENT FINAL GUESS - Format as statement
+                print("\n" + "=" * 50)
+                print(f"I am really confident it is a {guess}!")
+                print("=" * 50)
+                print(f"Is it a {guess}? (yes/no)")
+                user_input = input("-> ").strip().lower()
+                
+                if user_input in ['yes', 'y']:
+                    print(f"🎉 Yes! I got it!")
+                    return
+                else:
+                    # Wrong final guess - ask for the answer
+                    print("\nDarn! You've beaten me. What was the animal?")
+                    actual_animal = input("-> ").strip()
+                    
+                    if actual_animal:
+                        print("Thank you! I'm updating my knowledge for next time...")
+                        learn_result = submit_final_answer(session_id, actual_animal)
+                        print(f"Server response: {learn_result.get('message', 'Updated!')}")
+                    return
         
-        # This handles the end-of-game scenario
+        # Check if we've run out of questions
         if q_data.get('top_predictions'):
-            break # Exit loop to go to final guess logic
+            # No more questions - make final guess
+            predictions = q_data['top_predictions']
+            if predictions:
+                final_guess = predictions[0][0]
+                runner_ups = [p[0] for p in predictions[1:]]
+                
+                print("\n" + "=" * 50)
+                print(f"I am really confident it is a {final_guess}!")
+                print("=" * 50)
+                if runner_ups:
+                    print(f"(My runner-up guesses: {', '.join(runner_ups)})")
+                
+                print(f"\nIs it a {final_guess}? (yes/no)")
+                final_answer = input("-> ").strip().lower()
+                
+                if final_answer in ['yes', 'y']:
+                    print(f"🎉 Yes! I got it!")
+                    return
+            
+            # Wrong or no predictions
+            print("\nDarn! You've beaten me. What was the animal?")
+            actual_animal = input("-> ").strip()
+            
+            if actual_animal:
+                print("Thank you! I'm updating my knowledge for next time...")
+                learn_result = submit_final_answer(session_id, actual_animal)
+                print(f"Server response: {learn_result.get('message', 'Updated!')}")
+            return
 
         # Regular question
         question = q_data['question']
@@ -97,33 +151,27 @@ def play_game():
         # Submit answer
         submit_answer(session_id, feature, user_answer)
 
-    # --- FINAL GUESS LOGIC ---
+    # Reached max questions
     print("\n" + "=" * 50)
-    print("Okay, I've asked enough questions. Time for my final guess!")
-    final_q_data = get_question(session_id) # Get final predictions
-
+    print("I've asked too many questions! Let me make a final guess...")
+    final_q_data = get_question(session_id)
+    
     if final_q_data.get('top_predictions'):
         predictions = final_q_data['top_predictions']
-        final_guess = predictions[0][0]
-
-        # Display runner-ups if they exist
-        runner_ups = [p[0] for p in predictions[1:]]
-        
-        print(f"My final guess is a {final_guess}.")
-        if runner_ups:
-            print(f"My runner-up guesses are: {', '.join(runner_ups)}.")
-
-        print(f"\nIs {final_guess} the correct animal? (yes/no)")
-        final_answer = input("-> ").strip().lower()
-        
-        if final_answer in ['yes', 'y']:
-            print(f"🎉 Yes! I got it!")
-            return
-
-    # If the guess was wrong or no predictions were available
+        if predictions:
+            final_guess = predictions[0][0]
+            
+            print(f"I am really confident it is a {final_guess}!")
+            print(f"Is it a {final_guess}? (yes/no)")
+            final_answer = input("-> ").strip().lower()
+            
+            if final_answer in ['yes', 'y']:
+                print(f"🎉 Yes! I got it!")
+                return
+    
     print("\nDarn! You've beaten me. What was the animal?")
     actual_animal = input("-> ").strip()
-
+    
     if actual_animal:
         print("Thank you! I'm updating my knowledge for next time...")
         learn_result = submit_final_answer(session_id, actual_animal)

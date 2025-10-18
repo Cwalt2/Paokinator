@@ -1,4 +1,4 @@
-# server.py - Flask Server with Rejection Handling
+# server.py - Flask Server with Two-Stage Guessing
 from flask import Flask, request, jsonify
 from brain import AkinatorService
 import uuid
@@ -24,13 +24,14 @@ def get_question(session_id):
     
     game_state = sessions[session_id]
     
-    # Check if we should make a guess
-    should_guess, guess_animal = service.should_make_guess(game_state)
+    # Check if we should make a guess (now returns 3 values)
+    should_guess, guess_animal, guess_type = service.should_make_guess(game_state)
     
     if should_guess:
         return jsonify({
             'should_guess': True,
-            'guess': guess_animal
+            'guess': guess_animal,
+            'guess_type': guess_type  # 'middle' or 'final'
         })
     
     # Get next question
@@ -42,7 +43,7 @@ def get_question(session_id):
         return jsonify({
             'question': None,
             'feature': None,
-            'top_predictions': top_predictions # CHANGED: Now sends a list
+            'top_predictions': top_predictions
         })
     
     feature, question = result
@@ -78,7 +79,7 @@ def submit_answer(session_id):
 
 @app.route('/reject/<session_id>', methods=['POST'])
 def reject_animal(session_id):
-    """CRITICAL NEW ENDPOINT: Reject a guess and eliminate it."""
+    """Reject a guess and eliminate it."""
     if session_id not in sessions:
         return jsonify({'error': 'Session not found'}), 404
     
