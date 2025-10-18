@@ -1,10 +1,15 @@
-# server.py - Flask Server with Two-Stage Guessing
 from flask import Flask, request, jsonify
 from brain import AkinatorService
 import uuid
 
 app = Flask(__name__)
-service = AkinatorService()
+try:
+    service = AkinatorService()
+except FileNotFoundError as e:
+    print(f"FATAL ERROR: {e}")
+    print("Ensure 'animalfulldata.csv' is in the same directory.")
+    exit()
+
 
 # Store active game sessions
 sessions = {}
@@ -24,21 +29,19 @@ def get_question(session_id):
     
     game_state = sessions[session_id]
     
-    # Check if we should make a guess (now returns 3 values)
     should_guess, guess_animal, guess_type = service.should_make_guess(game_state)
     
     if should_guess:
         return jsonify({
             'should_guess': True,
             'guess': guess_animal,
-            'guess_type': guess_type  # 'middle' or 'final'
+            'guess_type': guess_type
         })
     
-    # Get next question
     result = service.get_next_question(game_state)
     
     if result is None:
-        # No more questions available, return top 3 for final guess
+        # No more questions available, force final guess
         top_predictions = service.get_top_predictions(game_state, n=3)
         return jsonify({
             'question': None,
@@ -70,9 +73,24 @@ def submit_answer(session_id):
         return jsonify({'error': 'Missing feature or answer'}), 400
     
     game_state = sessions[session_id]
-    service.process_answer(game_state, feature, answer)
+    answer_clean = answer.lower().strip()
     
-    # Return the top predictions after an answer
+    # Always add to asked_features to prevent re-asking
+    if feature not in game_state['asked_features']:
+        game_state['asked_features'].append(feature)
+    
+    if answer_clean in ['skip', 's']:
+        # User skipped. Don't update probabilities.
+        top_predictions = service.get_top_predictions(game_state, n=5)
+        return jsonify({'status': 'skipped', 'top_predictions': top_predictions})
+    
+    # Not a skip, so it's a real answer. Store it for learning.
+    fuzzy_value = service.fuzzy_map.get(answer_clean, 0.5)
+    game_state['answered_features'][feature] = fuzzy_value
+    
+    # Update probabilities based on the answer
+    service.process_answer(game_state, feature, answer_clean)
+    
     top_predictions = service.get_top_predictions(game_state, n=5)
     return jsonify({'status': 'ok', 'top_predictions': top_predictions})
 
@@ -92,7 +110,6 @@ def reject_animal(session_id):
     game_state = sessions[session_id]
     service.reject_guess(game_state, animal_name)
     
-    # Return updated predictions after rejection
     top_predictions = service.get_top_predictions(game_state, n=5)
     return jsonify({
         'status': 'rejected',
@@ -117,7 +134,6 @@ def learn_animal(session_id):
     
     service.learn_new_animal(animal_name, answered_features)
     
-    # Clean up session
     if session_id in sessions:
         del sessions[session_id]
     

@@ -3,7 +3,7 @@ import numpy as np
 from scipy.stats import entropy
 import json
 import os
-import torch # <-- Added PyTorch import
+import torch
 
 class FeatureProcessor:
     """
@@ -20,13 +20,11 @@ class FeatureProcessor:
         """
         feature_vector = self.features[:, feature_idx]
 
-       # Using PyTorch for the absolute difference calculation.
+        # Using PyTorch for the absolute difference calculation.
         try:
             feature_tensor = torch.from_numpy(feature_vector)
             target_tensor = torch.tensor(target_value, dtype=torch.float32)
-
             distances_tensor = torch.abs(target_tensor - feature_tensor)
-            
             distances = distances_tensor.numpy()
         except (ImportError, ModuleNotFoundError):
             # Fallback to NumPy if PyTorch is not available
@@ -37,15 +35,13 @@ class FeatureProcessor:
         # The rest of the logic remains in highly-optimized NumPy
         if abs(target_value - 0.5) > 0.3:  # For definite answers (Yes/No)
             likelihood = np.exp(-8.0 * distances)
-            
             # Softer penalty for opposites
             opposite_mask = (distances > 0.7)
             likelihood[opposite_mask] *= 0.001
-            
             # Lighter penalty for partial mismatches
             partial_mask = (distances > 0.3) & (distances <= 0.7)
             likelihood[partial_mask] *= 0.1
-        else:  # For uncertain answers
+        else:  # For uncertain answers (like 'maybe')
             likelihood = np.exp(-5.0 * distances)
 
         return np.clip(likelihood, 0.0001, 1.0)
@@ -191,7 +187,7 @@ class AkinatorService:
 
         self.fuzzy_map = {
             'yes': 1.0, 'y': 1.0, 'probably': 0.75,
-            'maybe': 0.5, 'idk': 0.5, '?': 0.5,
+            'maybe': 0.5,
             'probably not': 0.25, 'no': 0.0, 'n': 0.0
         }
         print("✅ Akinator brain initialized successfully.")
@@ -225,10 +221,13 @@ class AkinatorService:
         return self.question_selector.select_next_question(probabilities, asked_features)
 
     def process_answer(self, game_state, feature, user_answer):
-        """Process a user's answer and update state."""
+        """
+        Process a user's answer and update state.
+        NOTE: This method assumes 'skip' has been handled by the caller.
+        It only processes answers that map to a fuzzy value.
+        """
         fuzzy_value = self.fuzzy_map.get(user_answer.lower().strip(), 0.5)
-        game_state['asked_features'].append(feature)
-        game_state['answered_features'][feature] = fuzzy_value
+        
         probabilities = np.array(game_state['probabilities'])
         feature_idx = self.feature_cols.index(feature)
         likelihood = self.processor.compute_likelihood(feature_idx, fuzzy_value)
@@ -250,22 +249,21 @@ class AkinatorService:
             if probabilities.sum() > 0:
                 probabilities = probabilities / probabilities.sum()
             else:
+                # If everything is rejected, reset probabilities
                 probabilities = self.bayesian.get_uniform_prior()
             game_state['probabilities'] = probabilities.tolist()
         return game_state
 
     def should_make_guess(self, game_state):
         """
-        Guessing strategy based on new requirements:
-        - One middle guess if prob > 95%.
-        - Final guess if prob > 98%.
-        - Forced final guess if 22 questions are reached.
+        Guessing strategy (Corrected):
+        - One middle guess if prob > 95% (This check runs first).
+        - Final guess if prob > 98% OR 22 questions asked.
         """
         probabilities = np.array(game_state['probabilities'])
-        num_questions = len(game_state['asked_features'])
+        num_questions = len(game_state['answered_features']) # Count actual answers
         middle_guess_made = game_state.get('middle_guess_made', False)
         
-        # Find the top *non-rejected* animal and its probability
         top_indices = np.argsort(probabilities)[::-1]
         animal_name = None
         max_prob = 0.0
@@ -280,19 +278,15 @@ class AkinatorService:
         if animal_name is None:
             return False, None, None
 
-        if max_prob > 0.98:
-            game_state['final_guess_mode'] = True
-            return True, animal_name, "final"
-
-
+        # **MODIFICATION**: Check for middle guess condition *FIRST*.
         if not middle_guess_made and max_prob > 0.95:
             game_state['middle_guess_made'] = True
             return True, animal_name, "middle"
 
-        if num_questions >= 22:
+        # **MODIFICATION**: Check for final guess *SECOND*.
+        if max_prob > 0.98 or num_questions >= 22:
             game_state['final_guess_mode'] = True
             return True, animal_name, "final"
-        
 
         return False, None, None
 
@@ -339,10 +333,12 @@ def main_game_loop():
 
     while True:
         game_state = service.create_initial_state()
-        guessed_correctly = False # Flag to track if the AI won
+        guessed_correctly = False
+        question_count = 1
+        
         print("\n\n--- New Game Started ---")
         print("Think of an animal, and I will try to guess it!")
-        print("Answer with: Yes, No, Probably, Probably Not, Maybe, or IDK.")
+        print("Answer with: Yes, No, Probably, Probably Not, Maybe, or Skip.")
 
         while not game_state.get('final_guess_mode', False):
             should_guess, animal_guess, guess_type = service.should_make_guess(game_state)
@@ -355,7 +351,7 @@ def main_game_loop():
                 answer = input("> ").lower()
                 if answer in ['yes', 'y']:
                     print("🎉 I guessed it! Excellent!")
-                    guessed_correctly = True # Set flag on correct guess
+                    guessed_correctly = True
                     break
                 else:
                     print("🤔 Hmm, okay. Let's continue.")
@@ -366,23 +362,42 @@ def main_game_loop():
 
             question_data = service.get_next_question(game_state)
             if question_data is None:
-                print("I've run out of questions!") # More accurate message
+                print("I've run out of questions!")
                 break
             
             feature, question = question_data
-            print(f"\nQ{len(game_state['asked_features']) + 1}: {question}")
-            answer = input("> ")
-            game_state = service.process_answer(game_state, feature, answer)
+            
+            answer_clean = ''
+            while True:
+                print(f"\nQ{question_count}: {question}")
+                answer = input("> ")
+                answer_clean = answer.lower().strip()
+                
+                valid_answers = ['yes', 'y', 'no', 'n', 'probably', 'probably not', 'maybe', 'skip', 's']
+                if answer_clean in valid_answers:
+                    break
+                else:
+                    print("  (Invalid answer. Please use: Yes, No, Probably, Probably Not, Maybe, or Skip)")
+
+            game_state['asked_features'].append(feature)
+
+            if answer_clean in ['skip', 's']:
+                print("  (Skipping question...)")
+                continue
+            
+            fuzzy_value = service.fuzzy_map.get(answer_clean, 0.5)
+            game_state['answered_features'][feature] = fuzzy_value
+            
+            game_state = service.process_answer(game_state, feature, answer_clean)
+            
+            question_count += 1
 
             top_3 = service.get_top_predictions(game_state, 3)
             print(f"Top candidates: {[(name, f'{prob:.1%}') for name, prob in top_3]}")
 
-        # --- End of Game ---
-        # Replaced the flawed end-of-game check with the reliable flag.
         if not guessed_correctly:
             print("\nIt seems I couldn't guess your animal.")
             try:
-                # This is wrapped in a try-except in case no animals are left
                 top_animal, _ = service.get_top_predictions(game_state, 1)[0]
                 print(f"I thought it was a {top_animal}, but you stumped me!")
             except IndexError:
