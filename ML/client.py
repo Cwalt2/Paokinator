@@ -61,7 +61,9 @@ def play_game():
     print("=" * 50)
     print("Paokinator - I will guess the animal on your mind.")
     print("=" * 50)
-    print("Answer with: yes, no, probably, probably not, maybe, skip")
+    # --- MODIFICATION: Updated instructions ---
+    print("Answer with: yes, no, usually, sometimes, rarely, maybe, skip")
+    # --- END MODIFICATION ---
 
     question_count = 0
     max_questions = 25
@@ -124,14 +126,16 @@ def play_game():
         while True:
             print(f"\nQ{question_count}: {question}")
             user_answer = input("-> ").strip().lower()
-            valid_answers = ['yes', 'y', 'no', 'n', 'probably', 'probably not', 'maybe', 'skip', 's']
+            # --- MODIFICATION: Updated valid answers ---
+            valid_answers = ['yes', 'y', 'no', 'n', 'usually', 'sometimes', 'maybe', 'rarely', 'skip', 's']
+            # --- END MODIFICATION ---
             if user_answer in valid_answers:
                 break
             else:
-                print("  (Invalid answer. Please use one of the allowed options.)")
+                print(" (Invalid answer. Please use one of the allowed options.)")
         
         if user_answer in ['skip', 's']:
-            print("  (Skipping question...)")
+            print(" (Skipping question...)")
             submit_answer(session_id, feature, 'skip')
             question_count -= 1  # Decrement to re-use the question number
             continue

@@ -87,6 +87,9 @@ class BayesianEngine:
         if current_entropy < 0.01:
             return 0.0
 
+        # --- MODIFICATION ---
+        # Updated possible answers to match new fuzzy logic
+        # Note: This is internal for calculation, not user input
         possible_answers = [1.0, 0.75, 0.5, 0.25, 0.0]
         expected_entropy = 0.0
 
@@ -141,22 +144,30 @@ class QuestionSelector:
 
         num_questions_asked = len(asked_features)
         
-        if num_questions_asked == 0:
-            # First question is random to add variability
+        # --- MODIFICATION: Updated Question Selection Logic ---
+        # Always compute info gain first
+        gains = []
+        for idx in available_indices:
+            feature_vector = self.processor.features[:, idx]
+            gain = self.engine.compute_info_gain(probabilities, idx, feature_vector)
+            gains.append((gain, idx))
+
+        if not gains:
+            # Fallback if gains are zero or empty
             best_feature_idx = np.random.choice(available_indices)
         else:
-            # Subsequent questions are based on max info gain
-            gains = []
-            for idx in available_indices:
-                feature_vector = self.processor.features[:, idx]
-                gain = self.engine.compute_info_gain(probabilities, idx, feature_vector)
-                gains.append((gain, idx))
-
-            if not gains:
-                best_feature_idx = np.random.choice(available_indices)
+            gains.sort(key=lambda x: x[0], reverse=True)
+            
+            if num_questions_asked == 0:
+                # First question: random from top 10 best-splitting features
+                top_n = min(10, len(gains))
+                top_candidates = gains[:top_n]
+                top_indices = [idx for gain, idx in top_candidates]
+                best_feature_idx = np.random.choice(top_indices)
             else:
-                gains.sort(key=lambda x: x[0], reverse=True)
+                # Subsequent questions: the single best question
                 _, best_feature_idx = gains[0]
+        # --- END MODIFICATION ---
         
         feature = self.feature_cols[best_feature_idx]
         question = self.questions_map.get(feature, f"Does it have the characteristic: {feature.replace('_', ' ')}?")
@@ -168,7 +179,7 @@ class QuestionSelector:
 
 class AkinatorService:
     """Manages the game logic."""
-    def __init__(self, csv_path='animalfulldata.csv', questions_path='questions.json'):
+    def __init__(self, csv_path='data/animalfulldata.csv', questions_path='questions.json'):
         self.csv_path = csv_path
         self.questions_path = questions_path
 
@@ -185,11 +196,15 @@ class AkinatorService:
 
         self._initialize_modules()
 
+        # --- MODIFICATION: Updated Fuzzy Map ---
         self.fuzzy_map = {
-            'yes': 1.0, 'y': 1.0, 'probably': 0.75,
-            'maybe': 0.5,
-            'probably not': 0.25, 'no': 0.0, 'n': 0.0
+            'yes': 1.0, 'y': 1.0,
+            'usually': 0.75,
+            'sometimes': 0.5, 'maybe': 0.5, # Keep 'maybe' as an alias
+            'rarely': 0.25,
+            'no': 0.0, 'n': 0.0
         }
+        # --- END MODIFICATION ---
         print("✅ Akinator brain initialized successfully.")
 
     def _initialize_modules(self):
@@ -226,7 +241,7 @@ class AkinatorService:
         NOTE: This method assumes 'skip' has been handled by the caller.
         It only processes answers that map to a fuzzy value.
         """
-        fuzzy_value = self.fuzzy_map.get(user_answer.lower().strip(), 0.5)
+        fuzzy_value = self.fuzzy_map.get(user_answer.lower().strip(), 0.5) # Default to 'sometimes'
         
         probabilities = np.array(game_state['probabilities'])
         feature_idx = self.feature_cols.index(feature)
@@ -338,7 +353,9 @@ def main_game_loop():
         
         print("\n\n--- New Game Started ---")
         print("Think of an animal, and I will try to guess it!")
-        print("Answer with: Yes, No, Probably, Probably Not, Maybe, or Skip.")
+        # --- MODIFICATION: Updated instructions ---
+        print("Answer with: Yes, No, Usually, Sometimes, Rarely, Maybe, or Skip.")
+        # --- END MODIFICATION ---
 
         while not game_state.get('final_guess_mode', False):
             should_guess, animal_guess, guess_type = service.should_make_guess(game_state)
@@ -373,16 +390,19 @@ def main_game_loop():
                 answer = input("> ")
                 answer_clean = answer.lower().strip()
                 
-                valid_answers = ['yes', 'y', 'no', 'n', 'probably', 'probably not', 'maybe', 'skip', 's']
+                # --- MODIFICATION: Updated valid answers ---
+                valid_answers = ['yes', 'y', 'no', 'n', 'usually', 'sometimes', 'maybe', 'rarely', 'skip', 's']
+                # --- END MODIFICATION ---
+                
                 if answer_clean in valid_answers:
                     break
                 else:
-                    print("  (Invalid answer. Please use: Yes, No, Probably, Probably Not, Maybe, or Skip)")
+                    print(" (Invalid answer. Please use: Yes, No, Usually, Sometimes, Rarely, Maybe, or Skip)")
 
             game_state['asked_features'].append(feature)
 
             if answer_clean in ['skip', 's']:
-                print("  (Skipping question...)")
+                print(" (Skipping question...)")
                 continue
             
             fuzzy_value = service.fuzzy_map.get(answer_clean, 0.5)
