@@ -56,6 +56,7 @@ def get_question(session_id):
         'should_guess': False
     })
 
+
 @app.route('/answer/<session_id>', methods=['POST'])
 def submit_answer(session_id):
     """Process a user's answer."""
@@ -64,18 +65,45 @@ def submit_answer(session_id):
     
     data = request.json
     feature = data.get('feature')
-    answer = data.get('answer')
-    
-    if not feature or not answer:
-        return jsonify({'error': 'Missing feature or answer'}), 400
-    
+    client_answer = data.get('answer', 'skip').lower().strip() # Default to 'skip'
+
+    if not feature:
+        return jsonify({'error': 'Missing feature'}), 400
+
+    client_to_brain_map = {
+        'yes': 'yes',
+        'y': 'yes',
+        'no': 'no',
+        'n': 'no',
+        'usually': 'usually',
+        'sometimes': 'sometimes',
+        'rarely': 'rarely',
+    }
+
     game_state = sessions[session_id]
-    service.process_answer(game_state, feature, answer)
+
+    if feature not in game_state['asked_features']:
+        game_state['asked_features'].append(feature)
+
+    if client_answer == 'skip':
+        # Don't update probabilities, don't store in answered_features
+        sessions[session_id] = game_state # Save state (with new asked_feature)
+        top_predictions = service.get_top_predictions(game_state, n=5)
+        return jsonify({'status': 'skipped', 'top_predictions': top_predictions})
+
+    brain_answer = client_to_brain_map.get(client_answer)
+
+    if brain_answer is not None:
+        fuzzy_value = service.fuzzy_map.get(brain_answer)
+        if fuzzy_value is not None:
+            game_state['answered_features'][feature] = fuzzy_value
+        
+        service.process_answer(game_state, feature, brain_answer)
     
-    # Return the top predictions after an answer
+    sessions[session_id] = game_state
+    
     top_predictions = service.get_top_predictions(game_state, n=5)
     return jsonify({'status': 'ok', 'top_predictions': top_predictions})
-
 
 @app.route('/reject/<session_id>', methods=['POST'])
 def reject_animal(session_id):

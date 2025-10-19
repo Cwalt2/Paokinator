@@ -193,15 +193,15 @@ class AkinatorService:
 
         self._initialize_modules()
 
-        # --- MODIFICATION: Updated Fuzzy Map ---
+        # *** FIXED: Updated Fuzzy Map ***
+        # Now we map answers to their fuzzy values, but handle None separately
         self.fuzzy_map = {
             'yes': 1.0, 'y': 1.0,
             'usually': 0.75,
-            'sometimes': 0.5, 'maybe': 0.5, # Keep 'maybe' as an alias
+            'sometimes': 0.5, 'maybe': 0.5,
             'rarely': 0.25,
             'no': 0.0, 'n': 0.0
         }
-        # --- END MODIFICATION ---
         print("✅ Akinator brain initialized successfully.")
 
     def _initialize_modules(self):
@@ -219,8 +219,8 @@ class AkinatorService:
         self.question_selector.reset()
         return {
             'probabilities': self.bayesian.get_uniform_prior().tolist(),
-            'answered_features': {},
-            'asked_features': [],
+            'answered_features': {},  # Only stores features with actual answers (not skipped)
+            'asked_features': [],  # All features that were asked (including skipped)
             'rejected_animals': [],
             'middle_guess_made': False,
             'final_guess_mode': False
@@ -238,7 +238,11 @@ class AkinatorService:
         NOTE: This method assumes 'skip' has been handled by the caller.
         It only processes answers that map to a fuzzy value.
         """
-        fuzzy_value = self.fuzzy_map.get(user_answer.lower().strip(), 0.5) # Default to 'sometimes'
+        fuzzy_value = self.fuzzy_map.get(user_answer.lower().strip())
+        
+        # *** FIXED: Don't process if no valid fuzzy value ***
+        if fuzzy_value is None:
+            return game_state
         
         probabilities = np.array(game_state['probabilities'])
         feature_idx = self.feature_cols.index(feature)
@@ -316,17 +320,34 @@ class AkinatorService:
         return results
 
     def learn_new_animal(self, name, answered_features):
-        """Add or update an animal in the dataset."""
+        """
+        Add or update an animal in the dataset.
+        *** FIXED: Handle unknown values properly ***
+        """
         clean_name = name.strip()
         if clean_name.lower() in self.lower_case_animals:
+            # Update existing animal
             idx = self.df[self.df['animal_name'].str.lower() == clean_name.lower()].index[0]
             for feature, value in answered_features.items():
-                self.df.loc[idx, feature] = value
+                # Only update features that have actual values (not None/skipped)
+                if value is not None:
+                    self.df.loc[idx, feature] = value
             print(f"🧠 Updated existing animal: {self.df.loc[idx, 'animal_name']}")
         else:
+            # Add new animal
             new_name = clean_name.capitalize()
             new_row = {'animal_name': new_name}
-            new_row.update({f: answered_features.get(f, 0.5) for f in self.feature_cols})
+            
+            # *** FIXED: For new animals, only use answered features ***
+            # Unanswered features will use the existing median/mean from dataset
+            for f in self.feature_cols:
+                if f in answered_features and answered_features[f] is not None:
+                    # Use the actual answer
+                    new_row[f] = answered_features[f]
+                else:
+                    # Use dataset median for unknown features (neutral value)
+                    new_row[f] = self.df[f].median()
+            
             self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
             print(f"🧠 Learned new animal: {new_name}")
 
@@ -349,9 +370,7 @@ def main_game_loop():
         
         print("\n\n--- New Game Started ---")
         print("Think of an animal, and I will try to guess it!")
-        # --- MODIFICATION: Updated instructions ---
         print("Answer with: Yes, No, Usually, Sometimes, Rarely, Maybe, or Skip.")
-        # --- END MODIFICATION ---
 
         while not game_state.get('final_guess_mode', False):
             should_guess, animal_guess, guess_type = service.should_make_guess(game_state)
@@ -386,25 +405,27 @@ def main_game_loop():
                 answer = input("> ")
                 answer_clean = answer.lower().strip()
                 
-                # --- MODIFICATION: Updated valid answers ---
                 valid_answers = ['yes', 'y', 'no', 'n', 'usually', 'sometimes', 'maybe', 'rarely', 'skip', 's']
-                # --- END MODIFICATION ---
                 
                 if answer_clean in valid_answers:
                     break
                 else:
                     print(" (Invalid answer. Please use: Yes, No, Usually, Sometimes, Rarely, Maybe, or Skip)")
 
+            # *** FIXED: Always add to asked_features ***
             game_state['asked_features'].append(feature)
 
+            # *** FIXED: Handle skip properly - don't store value ***
             if answer_clean in ['skip', 's']:
                 print(" (Skipping question...)")
+                # Don't add to answered_features, don't update probabilities
                 continue
             
-            fuzzy_value = service.fuzzy_map.get(answer_clean, 0.5)
-            game_state['answered_features'][feature] = fuzzy_value
-            
-            game_state = service.process_answer(game_state, feature, answer_clean)
+            # *** FIXED: Store the fuzzy value in answered_features ***
+            fuzzy_value = service.fuzzy_map.get(answer_clean)
+            if fuzzy_value is not None:
+                game_state['answered_features'][feature] = fuzzy_value
+                game_state = service.process_answer(game_state, feature, answer_clean)
             
             question_count += 1
 
@@ -422,6 +443,7 @@ def main_game_loop():
             learn_answer = input("Would you like to teach me? (yes/no) > ").lower()
             if learn_answer in ['yes', 'y']:
                 correct_animal = input("What was the correct animal name? > ")
+                # *** FIXED: Only pass answered features (not skipped ones) ***
                 service.learn_new_animal(correct_animal, game_state['answered_features'])
 
         play_again = input("\nPlay again? (yes/no) > ").lower()
